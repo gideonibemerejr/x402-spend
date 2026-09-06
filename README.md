@@ -12,27 +12,69 @@ Node ≥ 22.5 (the store is `node:sqlite` — no native deps).
 
 ## Usage
 
-Wrap the x402 client you already have. The meter only observes; your client keeps owning schemes, signers, and spend controls.
+Wrap the x402 client you already have. It only observes; your client keeps owning schemes, signers, and spend controls.
 
 ```ts
-import { createMeter, SqliteSpendStore } from "x402-spend";
+import { createSpend, SqliteSpendStore } from "x402-spend";
 
-const meter = createMeter(client, new SqliteSpendStore()); // ./x402-spend.db
-const res = await meter.fetch("https://api.example.com/search?q=x402", { taskClass: "web-search" });
+const spend = createSpend(client, new SqliteSpendStore()); // ./x402-spend.db
+const res = await spend.fetch("https://api.example.com/search?q=x402", { taskClass: "web-search" });
 ```
 
-`meter.fetch` is a drop-in fetch: free calls pass through unrecorded; any call that reaches payment writes a receipt — wire fields from the protocol, per-leg latency and status from the transport.
+`spend.fetch` is a drop-in fetch: free calls pass through unrecorded; any call that reaches payment writes a receipt — wire fields from the protocol, per-leg latency and status from the transport.
 
 ### The label
 
 The receipt starts `unlabeled`. Only the caller knows whether the thing it paid for actually worked, so say so:
 
 ```ts
-await meter.label(meter.last()!, "used");          // it answered the question
-await meter.label(id, "discarded", "stale data");  // paid, but worthless
+await spend.label(spend.last()!, "used");          // it answered the question
+await spend.label(id, "discarded", "stale data");  // paid, but worthless
 ```
 
 Outcomes: `used` · `retried` · `discarded` · `failed` · `unlabeled`.
+
+## Publishing reviews
+
+A label is worth something to other buyers, but only if it can be checked. Point a spend at a review
+server and each label is also published as a review **verified against its settlement transaction** —
+the transaction hash is the proof of purchase.
+
+```ts
+const spend = createSpend(client, new SqliteSpendStore(), {
+  review: { endpoint: "https://x402-spend-reviews.g-764.workers.dev/v1/reviews" },
+});
+
+const result = await spend.label(id, "used", "clean answer");
+// { posted: true, status: "verified" }
+```
+
+`label()` returns `{ posted, status, error? }`. `status` is `verified` once the server has matched the
+payment against the chain, or `pending` when it accepted the review but could not reach the chain yet
+and will retry.
+
+**Off by default, opt-in per spend**, because a review is public.
+
+**What is sent**, and nothing else:
+
+`resourceUrl` · `taskClass` · `network` · `asset` · `amount` · `payTo` · `transaction` · `payer` ·
+`outcome` · `note` · `paidMs` · `ts`
+
+**What is not sent:** transport legs, byte counts, HTTP status, method, offered alternatives, and the
+local receipt id. The query string and fragment are stripped from `resourceUrl` before it leaves the
+machine, because API keys live in query strings.
+
+**A published review includes the payer address.** That is disclosed, not hidden: it is what lets
+anyone re-check the claim against the chain. Published reviews are licensed
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+Nothing about posting can cost you a label. The local write happens first and always; a review server
+that is down, slow (3 s timeout), or unhappy with the submission comes back as `{ posted: false,
+error }` and is never thrown. A receipt with no settlement — a refused offer, a transport failure — is
+never published, and `unlabeled` is not a publishable verdict.
+
+See [x402-spend-reviews](https://github.com/gideonibemerejr/x402-spend-reviews) for the verification
+rule, and `examples/live-sepolia.ts` for one real paid call end to end.
 
 ## The report
 
@@ -88,7 +130,7 @@ const text = formatReport(report, {
 import { SpendPersistenceError } from "x402-spend";
 
 try {
-  await meter.fetch(url);
+  await spend.fetch(url);
 } catch (error) {
   if (error instanceof SpendPersistenceError) {
     console.error("Receipt storage failed", error.receipt.id, error.cause);
@@ -108,7 +150,9 @@ Bytes are recorded only from `Content-Length`. Responses without that header, in
 
 ## Privacy
 
-Local only. Receipts go to a SQLite file on your machine; nothing leaves it in v0.1.
+Local only by default. Receipts go to a SQLite file on your machine and nothing leaves it unless you
+configure `review`, which is opt-in per `createSpend` call. When you do, only the review fields listed
+above are sent — never the receipt — and a published review is public and includes the payer address.
 
 ## Development roadmap
 
