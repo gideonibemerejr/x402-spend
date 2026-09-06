@@ -1,7 +1,5 @@
 #!/usr/bin/env node
-/**
- * x402-spend report [--db path] [--since 7d] [--decimals 6]
- */
+/** Command-line entry point for rendering reports from a local receipt database. */
 import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { DEFAULT_DB_PATH, SqliteSpendStore } from "./store.js";
@@ -13,6 +11,7 @@ const USAGE = `usage: x402-spend report [--db path] [--since 7d] [--decimals 6]
   --since     window: 30m, 24h, 7d, 2w, or a date (default: all time)
   --decimals  format atomic amounts as units of 10^-decimals (default: 6, USDC)`;
 
+/** Parses CLI arguments, renders the requested report, and sets the process exit code. */
 function main(): void {
   const { values, positionals } = parseArgs({
     options: {

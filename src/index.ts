@@ -1,3 +1,4 @@
+/** Public API for x402 client spend receipts, persistence, and reporting. */
 export {
   RECEIPT_SCHEMA_VERSION,
   type Leg,

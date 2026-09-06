@@ -1,26 +1,4 @@
-/**
- * The meter: an instrumented fetch around `wrapFetchWithPayment`, with an
- * AsyncLocalStorage context per outer call.
- *
- * Everything the wrapper does for one call — every HTTP leg, payload creation,
- * and the client hooks — runs inside that call's async context, so concurrent
- * calls (even to the same URL) never share state. The instrumented inner fetch
- * records what only the transport can see (legs: kind, status, ms, bytes); the
- * client hooks record what only the protocol can see.
- *
- * Hook → receipt field mapping:
- *   onBeforePaymentCreation (PaymentCreationContext)
- *     paymentRequired.resource        → resource
- *     paymentRequired.x402Version     → x402Version
- *     paymentRequired.accepts.length  → offeredAlternatives
- *     selectedRequirements            → scheme, network, asset, amountAuthorized, payTo
- *   onPaymentResponse (PaymentResponseContext)
- *     settleResponse.success          → settled
- *     settleResponse.amount           → amountSettled (falls back to authorized on success; `upto` can settle less)
- *     settleResponse.transaction      → transaction
- *     settleResponse.payer            → payer
- *     discrimination                  → failure { stage: settle | verify | transport }
- */
+/** Meter creation and per-call x402 payment instrumentation. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { x402Client } from "@x402/core/client";
@@ -29,29 +7,79 @@ import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { wrapFetchWithPayment } from "@x402/fetch";
 import { RECEIPT_SCHEMA_VERSION, type Leg, type Outcome, type SpendReceipt } from "./receipt.js";
 
+/**
+ * Persistence contract required by {@link createMeter}.
+ *
+ * Implementations may store receipts locally or remotely, but should preserve
+ * receipt IDs and make label updates durable before resolving.
+ */
 export interface SpendStore {
-  insert(r: SpendReceipt): Promise<void>;
+  /**
+   * Persists a finalized receipt.
+   *
+   * @param receipt - Receipt assembled after the paid call returns or throws.
+   * @returns A promise that resolves after the receipt is durable.
+   */
+  insert(receipt: SpendReceipt): Promise<void>;
+  /**
+   * Updates the caller-assigned outcome for a stored receipt.
+   *
+   * @param id - Receipt UUID returned by {@link Spend.last} or retained by the caller.
+   * @param outcome - New disposition of the paid result.
+   * @param note - Optional explanation for the disposition.
+   * @returns A promise that resolves after the update is durable.
+   * @throws When no receipt exists for `id`, or when persistence fails.
+   */
   label(id: string, outcome: Outcome, note?: string): Promise<void>;
 }
 
-/** Per-call `fetch` options. `taskClass` lands on the receipt (the seed of a unit of work). */
+/** Options accepted by {@link Spend.fetch}. */
 export interface SpendFetchInit extends RequestInit {
+  /** Optional caller-defined category copied onto the receipt for later aggregation. */
   taskClass?: string;
 }
 
+/**
+ * Instrumented x402 client returned by {@link createMeter}.
+ *
+ * It behaves like `fetch` for callers while recording only requests that reach
+ * a payment decision. It does not modify the client's schemes, signers, or
+ * spend controls.
+ */
 export interface Spend {
-  /** Drop-in paid fetch. Records a receipt for every call that reaches payment. */
+  /**
+   * Performs an HTTP request through the configured x402 client.
+   *
+   * Free responses pass through without a receipt. Paid attempts and decoded
+   * payment refusals are finalized in the store before this promise settles.
+   *
+   * @param input - Request URL or existing `Request`.
+   * @param init - Standard fetch options plus an optional task classification.
+   * @returns The final response produced by the x402 wrapper.
+   * @throws The original request, payment creation, or persistence error.
+   */
   fetch(input: RequestInfo | URL, init?: SpendFetchInit): Promise<Response>;
-  /** Attach the outcome — the column no bank can fill in. */
+  /**
+   * Assigns a caller-known outcome to a stored receipt.
+   *
+   * @param id - Receipt UUID to update.
+   * @param outcome - Whether the paid result was used, retried, discarded, or failed.
+   * @param note - Optional explanation for the outcome.
+   * @returns A promise that resolves after the store applies the label.
+   */
   label(id: string, outcome: Outcome, note?: string): Promise<void>;
   /**
-   * Id of this meter's most recently recorded receipt, for labeling the call
-   * you just made: `meter.label(meter.last()!, "used")`. With calls in flight
-   * concurrently, "last" means last to finish — hold onto ids yourself there.
+   * Returns the ID of the receipt most recently finalized by this meter.
+   *
+   * With concurrent calls, “most recent” means the last call to finish, not the
+   * last one started. Concurrent callers should retain their own receipt IDs.
+   *
+   * @returns The latest receipt UUID, or `undefined` before any receipt exists.
    */
   last(): string | undefined;
 }
 
+/** Protocol fields collected before payment creation. */
 type Wire = Pick<
   SpendReceipt,
   | "resource"
@@ -64,17 +92,24 @@ type Wire = Pick<
   | "offeredAlternatives"
 >;
 
+/** Settlement fields collected after a payment response. */
 type Settle = Pick<SpendReceipt, "settled" | "amountSettled" | "transaction" | "payer" | "failure">;
 
-/** One outer call's state. Created per meter.fetch(), carried by AsyncLocalStorage. */
+/** Mutable state for one logical call, isolated through `AsyncLocalStorage`. */
 interface CallContext {
+  /** Receipt UUID allocated when the outer call starts. */
   id: string;
+  /** Epoch milliseconds captured when the outer call starts. */
   started: number;
+  /** Normalized HTTP method recorded on the receipt. */
   method: string;
+  /** Optional caller-defined work category. */
   taskClass?: string;
+  /** Transport legs in request order. */
   legs: Leg[];
+  /** Number of payment-bearing legs seen, used to distinguish recovery. */
   paidLegs: number;
-  /** Set by onBeforePaymentCreation. Absent → the call never reached payment (free call, not recorded). */
+  /** Fields captured by `onBeforePaymentCreation`; absent for free calls and early refusals. */
   wire?: Wire;
   /**
    * The parsed 402, captured by the instrumented fetch itself. Spend controls
@@ -82,9 +117,9 @@ interface CallContext {
    * refused offer fires no hook — this is the only wire source for that receipt.
    */
   paymentRequired402?: PaymentRequired;
-  /** Set by onPaymentResponse (last write wins across a recovery retry). */
+  /** Fields captured by `onPaymentResponse`; the recovery response wins when present. */
   settle?: Settle;
-  /** A leg's fetch itself rejected (network error), as opposed to payload creation failing. */
+  /** Transport rejection, distinguished from payment-payload creation failures. */
   transportError?: Error;
 }
 
@@ -122,8 +157,22 @@ function wireFromRefusal(paymentRequired: PaymentRequired): Wire | undefined {
 }
 
 /**
- * Wraps an already-configured x402Client with metering. The client owns
- * schemes/signers; the meter only observes (its hooks never abort or recover).
+ * Wraps an already-configured x402 client with spend metering.
+ *
+ * The supplied client continues to own schemes, signers, selection, and spend
+ * controls. The meter registers additive observation hooks but never aborts,
+ * recovers, filters, or otherwise controls a payment. Use one meter per client
+ * because x402 client hook registration is permanent.
+ *
+ * Each logical call runs in its own `AsyncLocalStorage` context. This keeps
+ * concurrent calls isolated even when they target the same URL. Transport legs
+ * supply status, latency, and byte counts; client hooks supply protocol and
+ * settlement fields.
+ *
+ * @param client - Configured x402 client containing the caller's schemes and signers.
+ * @param store - Destination for finalized receipts and later outcome labels.
+ * @param fetchImpl - Fetch implementation to instrument; defaults to global `fetch`.
+ * @returns A metered fetch interface bound to `client` and `store`.
  */
 export function createMeter(client: x402Client, store: SpendStore, fetchImpl: typeof fetch = fetch): Spend {
   const als = new AsyncLocalStorage<CallContext>();
@@ -170,8 +219,10 @@ export function createMeter(client: x402Client, store: SpendStore, fetchImpl: ty
       };
     });
 
-  // The fetch handed to wrapFetchWithPayment: sees every leg of every call.
-  // A leg is paid iff the request carries a payment header; order does the rest.
+  /**
+   * Fetch implementation supplied to `wrapFetchWithPayment` so every transport
+   * leg can be measured inside its logical call context.
+   */
   const instrumented: typeof fetch = async (input, init) => {
     const call = als.getStore();
     if (!call) return fetchImpl(input, init);
@@ -213,6 +264,13 @@ export function createMeter(client: x402Client, store: SpendStore, fetchImpl: ty
   const wrapped = wrapFetchWithPayment(instrumented, client);
   let lastId: string | undefined;
 
+  /**
+   * Builds and persists a receipt if the call reached a payment decision.
+   *
+   * @param call - Isolated state accumulated for the logical call.
+   * @param finalStatus - HTTP status ultimately returned to the caller.
+   * @param err - Error thrown while resolving the call, when applicable.
+   */
   async function finalize(call: CallContext, finalStatus: number | undefined, err?: unknown): Promise<void> {
     // No hook fired: either a free call (nothing to record), or the client
     // refused the offer before onBeforePaymentCreation (spend controls, no
