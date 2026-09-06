@@ -448,8 +448,15 @@ test("a review server that is down, slow or unhappy never reaches the caller", a
     ["refused", async () => { throw new Error("ECONNREFUSED"); }, /ECONNREFUSED/],
     ["500", async () => new Response("boom", { status: 500 }), /returned 500/],
     ["422", async () => new Response("bad asset", { status: 422 }), /returned 422: bad asset/],
+    // AbortSignal.timeout's own timer is unref'd, so with a fake fetch holding
+    // no sockets the loop can drain before it fires and this promise would
+    // never settle. A ref'd timer keeps the process alive until the abort lands.
     ["timeout", (_i, init) => new Promise((_resolve, reject) => {
-      (init?.signal as AbortSignal).addEventListener("abort", () => reject(new Error("The operation was aborted")));
+      const keepAlive = setTimeout(() => reject(new Error("abort never fired")), 5_000);
+      (init?.signal as AbortSignal).addEventListener("abort", () => {
+        clearTimeout(keepAlive);
+        reject(new Error("The operation was aborted"));
+      });
     }), /abort/i],
   ];
   for (const [name, reviewFetch, reason] of cases) {
