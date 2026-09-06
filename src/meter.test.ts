@@ -20,7 +20,7 @@ import {
   decodePaymentSignatureHeader,
 } from "@x402/core/http";
 import type { PaymentRequired, PaymentRequirements, SchemeNetworkClient } from "@x402/core/types";
-import { createMeter, type SpendStore } from "./meter.js";
+import { createMeter, SpendPersistenceError, type SpendStore } from "./meter.js";
 import type { Outcome, SpendReceipt } from "./receipt.js";
 
 const NETWORK = "eip155:84532";
@@ -201,7 +201,7 @@ test("smoke: meter → sqlite store → label(last()) → report", async () => {
     assert.equal(r.outcomeNote, "worth it");
     assert.equal(r.taskClass, "web-search");
 
-    const out = formatReport(buildReport(store.list()));
+    const out = formatReport(buildReport(store.list()), { decimals: 6 });
     assert.match(out, /0\.005001 \(1 used\)/); // nonce 1 settles 5001 atomic units
     store.close();
   } finally {
@@ -262,4 +262,99 @@ test("a 402 refused under spend controls still produces a receipt (settled: fals
   } finally {
     server.close();
   }
+});
+
+/** Deterministic v2 exchange; no sockets or payment network required. */
+function fakeTransport(onPaid?: (request: Request) => Promise<Response>): typeof fetch {
+  return async (input, init) => {
+    const request = new Request(input, init);
+    if (!request.headers.has("PAYMENT-SIGNATURE")) {
+      return new Response(null, { status: 402, headers: {
+        "PAYMENT-REQUIRED": encodePaymentRequiredHeader(paymentRequiredFor(request.url)),
+      } });
+    }
+    if (onPaid) return onPaid(request);
+    return new Response("delivered", { headers: {
+      "PAYMENT-RESPONSE": encodePaymentResponseHeader({
+        success: true, transaction: "0xtx", network: NETWORK, amount: "5000",
+      }),
+    } });
+  };
+}
+
+test("storage failure after payment attempts one insert and preserves the response and receipt", async () => {
+  const failure = new Error("disk full");
+  const attempts: SpendReceipt[] = [];
+  let fail = false;
+  const store: SpendStore = {
+    insert: async (r) => { attempts.push(r); if (fail) throw failure; },
+    label: async () => {},
+  };
+  const meter = createMeter(makeClient(), store, fakeTransport());
+  await meter.fetch("https://api.test/paid");
+  const previousId = meter.last();
+  fail = true;
+  let caught: unknown;
+  try { await meter.fetch("https://api.test/paid"); } catch (error) { caught = error; }
+  assert.equal(attempts.length, 2, "one successful write and one failed write, with no retry");
+  assert.ok(caught instanceof SpendPersistenceError);
+  const error = caught;
+  assert.ok(error.response);
+  assert.equal(error.name, "SpendPersistenceError");
+  assert.equal(error.cause, failure);
+  assert.equal(error.receipt, attempts[1]);
+  assert.equal(error.receipt.settled, true);
+  assert.equal(error.receipt.failure, undefined);
+  assert.equal(await error.response.text(), "delivered");
+  assert.equal(error.requestError, undefined);
+  assert.equal(meter.last(), previousId);
+});
+
+test("transport and persistence failures remain inspectable without a second insert", async () => {
+  const transportFailure = new Error("connection reset");
+  const storageFailure = new Error("database unavailable");
+  let attempts = 0;
+  const meter = createMeter(makeClient(), {
+    insert: async () => { attempts++; throw storageFailure; }, label: async () => {},
+  }, fakeTransport(async () => { throw transportFailure; }));
+  let caught: unknown;
+  try { await meter.fetch("https://api.test/paid"); } catch (error) { caught = error; }
+  assert.equal(attempts, 1);
+  assert.ok(caught instanceof SpendPersistenceError);
+  const error = caught;
+  assert.equal(error.cause, storageFailure);
+  assert.equal(error.requestError, transportFailure);
+  assert.equal(error.response, undefined);
+  assert.equal(error.receipt.failure?.stage, "transport");
+  assert.equal(error.receipt.status, 0);
+  assert.equal(meter.last(), undefined);
+});
+
+test("successful persistence preserves the original rejected value, even undefined", async () => {
+  for (const failure of [new Error("connection reset"), undefined]) {
+    const store = new MemoryStore();
+    const meter = createMeter(makeClient(), store, fakeTransport(async () => { throw failure; }));
+    let rejected = false;
+    try { await meter.fetch("https://api.test/paid"); } catch (error) {
+      rejected = true;
+      assert.equal(error, failure);
+    }
+    assert.equal(rejected, true);
+    assert.equal(store.receipts.length, 1);
+    assert.equal(store.receipts[0].failure?.stage, "transport");
+  }
+});
+
+test("Request init overrides match the recorded method and preserve body across legs", async () => {
+  const store = new MemoryStore();
+  const seen: Array<[string, string]> = [];
+  const transport = fakeTransport();
+  const meter = createMeter(makeClient(), store, async (input, init) => {
+    const request = new Request(input, init);
+    seen.push([request.method, await request.clone().text()]);
+    return transport(request);
+  });
+  await meter.fetch(new Request("https://api.test/paid"), { method: "post", body: "hello" });
+  assert.deepEqual(seen, [["POST", "hello"], ["POST", "hello"]]);
+  assert.equal(store.receipts[0].method, "POST");
 });

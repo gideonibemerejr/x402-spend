@@ -53,7 +53,9 @@ test("buildReport: spend, success rate, median cost per used, paid-leg percentil
   assert.equal(other.spendAtomic, 50n);
   assert.equal(other.medianCostPerUsedAtomic, undefined);
 
-  assert.deepEqual(report.totals, { calls: 5, settledCalls: 4, spendAtomic: 1350n });
+  assert.deepEqual(report.totals, { calls: 5, settledCalls: 4, invalidAmountCalls: 0 });
+  assert.deepEqual(report.denominations, [{ network: "eip155:84532", asset: "0xusdc",
+    calls: 5, settledCalls: 4, spendAtomic: 1350n, invalidAmountCalls: 0 }]);
 });
 
 test("formatAtomic pads to the requested decimals", () => {
@@ -64,7 +66,7 @@ test("formatAtomic pads to the requested decimals", () => {
 });
 
 test("formatReport names the atomic-unit scaling", () => {
-  const out = formatReport(buildReport([receipt("http://api.test/x", { amount: "10000", paidMs: 80 })]));
+  const out = formatReport(buildReport([receipt("http://api.test/x", { amount: "10000", paidMs: 80 })]), { decimals: 6 });
   assert.match(out, /atomic units ÷ 10\^6/);
   assert.match(out, /TOTAL\s+1\s+100%\s+0\.010000/);
 });
@@ -75,4 +77,108 @@ test("parseSince handles durations and dates", () => {
   assert.equal(parseSince("30m", now).toISOString(), "2026-09-06T11:30:00.000Z");
   assert.equal(parseSince("2026-09-01", now).getTime(), Date.parse("2026-09-01"));
   assert.throws(() => parseSince("yesterday-ish"), /cannot parse --since/);
+});
+
+test("overflowing durations and invalid reference dates are rejected", () => {
+  for (const input of ["99999999999999999999999w", "99999999999999999999999m"]) {
+    assert.throws(() => parseSince(input), /cannot parse --since/);
+  }
+  assert.throws(() => parseSince("1d", new Date(NaN)), /cannot parse --since/);
+});
+
+test("one malformed settled amount does not hide valid report data", () => {
+  const rows = [receipt("http://api.test/x", { amount: "100", outcome: "used" })];
+  for (const amount of ["$0.10", "", " ", "1.2", "-1", "0x10", "1e3"]) {
+    rows.push(receipt("http://api.test/x", { amount, outcome: "used" }));
+  }
+  const report = buildReport(rows);
+  assert.equal(report.endpoints[0].spendAtomic, 100n);
+  assert.equal(report.endpoints[0].medianCostPerUsedAtomic, 100n);
+  assert.equal(report.endpoints[0].calls, 8);
+  assert.match(formatReport(report), /7.*invalid amount/i);
+  assert.match(formatReport(report), /partial/i);
+});
+
+test("receipts are separated by network and asset even at the same endpoint", () => {
+  const a = receipt("http://api.test/x", { amount: "100" });
+  const report = buildReport([a, { ...a, id: "b", asset: "0xother" },
+    { ...a, id: "c", network: "eip155:8453" }]);
+  assert.equal(report.endpoints.length, 3);
+  assert.equal(Object.hasOwn(report.totals, "spendAtomic"), false, "no mixed-denomination total");
+  const out = formatReport(report);
+  assert.match(out, /0xother/);
+  assert.match(out, /eip155:8453/);
+  assert.equal((out.match(/TOTAL/g) ?? []).length, 3);
+  assert.throws(() => formatReport(report, { decimals: 6 }), /single denomination/i);
+});
+
+test("decimals resolve per denomination and unknown assets stay atomic", () => {
+  const a = receipt("http://api.test/x", { amount: "1234567" });
+  const b = { ...a, id: "b", asset: "other", amountSettled: "12345" };
+  const c: SpendReceipt = { ...a, id: "c", network: "eip155:8453", amountSettled: "42" };
+  const report = buildReport([a, b, c]);
+  assert.deepEqual(report.denominations.map((d) => d.spendAtomic).sort((a, b) => a < b ? -1 : 1), [42n, 12345n, 1234567n]);
+  const output = formatReport(report, { assetDecimals: [
+    { network: a.network, asset: a.asset, decimals: 6 },
+    { network: b.network, asset: b.asset, decimals: 2 },
+  ] });
+  assert.match(output, /1\.234567/);
+  assert.match(output, /123\.45/);
+  assert.match(output, /eip155:8453 · 0xusdc · amounts are atomic units \(decimals unknown\)/);
+  assert.match(output, /TOTAL\s+1\s+100%\s+42/);
+  assert.throws(() => formatReport(report, { assetDecimals: [
+    { network: a.network, asset: a.asset, decimals: 6 },
+    { network: a.network, asset: a.asset, decimals: 2 },
+  ] }), /conflicting decimals/);
+});
+
+test("all-invalid amounts remain visibly partial and do not produce cost samples", () => {
+  const report = buildReport([receipt("http://api.test/x", { amount: "broken", outcome: "used" })]);
+  assert.equal(report.totals.invalidAmountCalls, 1);
+  assert.equal(report.denominations[0].invalidAmountCalls, 1);
+  assert.equal(report.endpoints[0].medianCostPerUsedAtomic, undefined);
+  assert.equal(report.endpoints[0].costSamples, 0);
+  assert.match(formatReport(report), /0\/1 used samples/);
+  assert.match(formatReport(report), /partial/);
+});
+
+test("report preserves exact amounts, authorized fallback, empty data and since metadata", () => {
+  const a = receipt("http://api.test/x", { amount: "900719925474099300000", outcome: "used" });
+  const b = { ...a, id: "b", amountSettled: undefined, amountAuthorized: "123" };
+  const c = { ...a, id: "c", amountSettled: "0" };
+  const d = { ...a, id: "d", amountSettled: "bad" }; // must not fall back to authorized
+  const since = new Date("2099-01-01");
+  const report = buildReport([a, b, c, d], since);
+  assert.equal(report.totals.calls, 4); // since does not filter
+  assert.equal(report.since, since);
+  assert.equal(report.denominations[0].spendAtomic, 900719925474099300123n);
+  assert.equal(report.denominations[0].invalidAmountCalls, 1);
+  assert.equal(report.endpoints[0].medianCostPerUsedAtomic, 123n);
+  assert.match(formatReport(buildReport([])), /No receipts/);
+  assert.deepEqual(buildReport([]).denominations, []);
+});
+
+test("unsettled used receipts are unpriced and stay out of the median", () => {
+  const report = buildReport([
+    receipt("http://api.test/x", { amount: "100", outcome: "used" }),
+    receipt("http://api.test/x", { settled: false, outcome: "used" }),
+  ]);
+  assert.equal(report.endpoints[0].medianCostPerUsedAtomic, 100n);
+  assert.equal(report.endpoints[0].costSamples, 1);
+  assert.equal(report.endpoints[0].unsettledUsedCalls, 1);
+  assert.equal(report.endpoints[0].usedCalls, 2);
+});
+
+test("a used endpoint with no settled call reports no median at all", () => {
+  const report = buildReport([receipt("http://api.test/x", { settled: false, outcome: "used" })]);
+  assert.equal(report.endpoints[0].medianCostPerUsedAtomic, undefined);
+  assert.equal(report.endpoints[0].costSamples, 0);
+  assert.equal(report.endpoints[0].unsettledUsedCalls, 1);
+  assert.equal(report.endpoints[0].usedCalls, 1);
+});
+
+test("decimal formatting rejects invalid or unbounded scales", () => {
+  for (const decimals of [-1, 0.5, NaN, Infinity, 256]) {
+    assert.throws(() => formatAtomic(1n, decimals), /decimals must be/);
+  }
 });

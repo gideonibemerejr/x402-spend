@@ -122,10 +122,12 @@ export class SqliteSpendStore implements SpendStore {
       .prepare(
         `UPDATE receipts
          SET outcome = ?, outcome_note = ?,
-             json = json_set(json, '$.outcome', ?, '$.outcomeNote', ?)
+             json = CASE WHEN ? IS NULL
+               THEN json_remove(json_set(json, '$.outcome', ?), '$.outcomeNote')
+               ELSE json_set(json, '$.outcome', ?, '$.outcomeNote', ?) END
          WHERE id = ?`
       )
-      .run(outcome, note ?? null, outcome, note ?? null, id).changes;
+      .run(outcome, note ?? null, note ?? null, outcome, outcome, note ?? null, id).changes;
     if (changed === 0) throw new Error(`x402-spend: no receipt with id ${id}`);
   }
 

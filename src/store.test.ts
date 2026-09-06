@@ -70,3 +70,18 @@ test("list({since}) filters on ts", async () => {
   assert.equal(store.list().length, 2);
   store.close();
 });
+
+test("label without a note removes the JSON key and clears a previous note", async () => {
+  const store = new SqliteSpendStore(":memory:");
+  try {
+    const r = receipt();
+    await store.insert(r);
+    for (const note of [undefined, "useful", "", undefined]) {
+      await store.label(r.id, "used", note);
+      const [row] = store.list();
+      assert.equal(row.outcomeNote, note);
+      assert.equal(Object.hasOwn(row, "outcomeNote"), note !== undefined);
+      assert.equal(row.outcome, "used");
+    }
+  } finally { store.close(); }
+});

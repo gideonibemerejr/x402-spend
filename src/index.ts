@@ -5,13 +5,16 @@ export {
   type Outcome,
   type SpendReceipt,
 } from "./receipt.js";
-export { createMeter, type Spend, type SpendFetchInit, type SpendStore } from "./meter.js";
+export { createMeter, SpendPersistenceError, type Spend, type SpendFetchInit, type SpendStore } from "./meter.js";
 export { DEFAULT_DB_PATH, SqliteSpendStore } from "./store.js";
 export {
   buildReport,
   formatAtomic,
   formatReport,
   parseSince,
+  type AssetDecimals,
+  type Denomination,
+  type DenominationStats,
   type EndpointStats,
   type Report,
 } from "./report.js";
