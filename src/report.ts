@@ -1,82 +1,70 @@
 /** Pure aggregation and text formatting for x402 spend reports. */
 import type { SpendReceipt } from "./receipt.js";
 
-/** Aggregated spend and latency statistics for one exact resource URL. */
-export interface EndpointStats {
-  /** Exact `resource.url` shared by receipts in this group, including its query string. */
-  resourceUrl: string;
-  /** Number of receipts in the group. */
+/** Identifies one denomination. Asset identifiers are kept exactly as recorded. */
+export interface Denomination {
+  network: string;
+  asset: string;
+}
+
+/** Counts and monetary data for one asset on one network. */
+export interface DenominationStats extends Denomination {
   calls: number;
-  /** Number of receipts whose settlement succeeded. */
   settledCalls: number;
-  /** Atomic units actually settled (settled calls only; `upto` settles less than authorized). */
+  /** Sum of valid settled amounts only; partial when invalidAmountCalls is nonzero. */
   spendAtomic: bigint;
-  /** Median effective cost of `used` receipts; unsettled receipts contribute zero. */
+  /** Settled receipts excluded from monetary statistics because their amount is invalid. */
+  invalidAmountCalls: number;
+}
+
+/** Statistics for one exact resource URL and denomination. */
+export interface EndpointStats extends DenominationStats {
+  resourceUrl: string;
+  /** Median effective cost of valid `used` samples; unsettled receipts still contribute zero. */
   medianCostPerUsedAtomic?: bigint;
-  /** Number of receipts labeled `used`, whether settled or not. */
+  /** All receipts labeled used, including ones with invalid amounts. */
   usedCalls: number;
-  /** Nearest-rank 50th percentile latency of final payment-bearing legs, in milliseconds. */
+  /** Number of used samples with a valid effective cost. */
+  costSamples: number;
   p50PaidMs?: number;
-  /** Nearest-rank 95th percentile latency of final payment-bearing legs, in milliseconds. */
   p95PaidMs?: number;
 }
 
-/** Aggregated report data ready for text or programmatic presentation. */
 export interface Report {
-  /** Optional lower-bound timestamp displayed in formatted output. */
+  /** Display metadata only; callers supply already-filtered receipts. */
   since?: Date;
-  /** Per-URL statistics sorted by descending settled spend. */
+  /** Sorted by denomination, then descending spend within that denomination. */
   endpoints: EndpointStats[];
-  /** Counts and settled spend across every endpoint in the report. */
-  totals: {
-    /** Total number of receipts. */
-    calls: number;
-    /** Total number of successfully settled receipts. */
-    settledCalls: number;
-    /** Total successfully settled amount in atomic units. */
-    spendAtomic: bigint;
-  };
+  /** Counts across all denominations, never a combined monetary total. */
+  totals: { calls: number; settledCalls: number; invalidAmountCalls: number };
+  denominations: DenominationStats[];
 }
 
-/**
- * Parses a report time boundary from a duration or date string.
- *
- * Supported duration suffixes are minutes (`m`), hours (`h`), days (`d`), and
- * weeks (`w`). Other inputs are delegated to `Date.parse`.
- *
- * @param input - Duration such as `30m`, `24h`, `7d`, or `2w`, or a parseable date.
- * @param now - Reference time for duration subtraction; defaults to the current time.
- * @returns The absolute lower-bound timestamp.
- * @throws When `input` is neither a supported duration nor a parseable date.
- */
+/** Explicit formatting metadata; unknown denominations remain in atomic units. */
+export interface AssetDecimals extends Denomination {
+  decimals: number;
+}
+
+/** Duration (30m, 24h, 7d, 2w) or parseable date → report time boundary. */
 export function parseSince(input: string, now: Date = new Date()): Date {
   const m = /^(\d+)([mhdw])$/.exec(input.trim());
-  if (m) {
-    const ms = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[m[2] as "m" | "h" | "d" | "w"];
-    return new Date(now.getTime() - Number(m[1]) * ms);
+  const ms = m
+    ? { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[m[2] as "m" | "h" | "d" | "w"]
+    : 0;
+  const parsed = new Date(m ? now.getTime() - Number(m[1]) * ms : Date.parse(input));
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new Error(`x402-spend: cannot parse --since ${JSON.stringify(input)}; use 30m, 24h, 7d, 2w, or a date`);
   }
-  const parsed = Date.parse(input);
-  if (Number.isNaN(parsed)) throw new Error(`x402-spend: cannot parse --since ${JSON.stringify(input)}; use 30m, 24h, 7d, 2w, or a date`);
-  return new Date(parsed);
+  return parsed;
 }
 
-/**
- * Returns the effective settled amount for aggregation.
- *
- * @param receipt - Receipt to price.
- * @returns Zero for unsettled calls; otherwise the settled or authorized atomic amount.
- */
-function settledAmount(receipt: SpendReceipt): bigint {
+/** Undefined denotes invalid monetary data, not a zero-cost settlement. */
+function settledAmount(receipt: SpendReceipt): bigint | undefined {
   if (!receipt.settled) return 0n;
-  return BigInt(receipt.amountSettled ?? receipt.amountAuthorized);
+  const amount = receipt.amountSettled ?? receipt.amountAuthorized;
+  return typeof amount === "string" && /^\d+$/.test(amount) ? BigInt(amount) : undefined;
 }
 
-/**
- * Finds latency for the payment-bearing leg that delivered the final result.
- *
- * @param receipt - Receipt whose legs should be inspected.
- * @returns Recovery latency when present, paid latency otherwise, or `undefined`.
- */
 function paidMs(receipt: SpendReceipt): number | undefined {
   for (let i = receipt.legs.length - 1; i >= 0; i--) {
     const leg = receipt.legs[i];
@@ -85,85 +73,86 @@ function paidMs(receipt: SpendReceipt): number | undefined {
   return undefined;
 }
 
-/**
- * Calculates the integer median of an ascending bigint collection.
- *
- * Even-sized collections use integer division and therefore round toward zero.
- */
 function medianBigint(sorted: bigint[]): bigint | undefined {
   if (sorted.length === 0) return undefined;
   const mid = sorted.length >> 1;
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2n;
 }
 
-/** Returns the nearest-rank percentile from an ascending numeric collection. */
 function percentile(sorted: number[], p: number): number | undefined {
   if (sorted.length === 0) return undefined;
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))];
 }
 
+const denominationKey = (d: Denomination) => JSON.stringify([d.network, d.asset]);
+const compareText = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+
 /**
- * Aggregates receipts into per-endpoint and overall spend statistics.
- *
- * Grouping uses the exact `resource.url`, including query strings. Amounts stay
- * as `bigint` atomic units until presentation to avoid precision loss.
- *
- * This function does not filter by `since`; callers should provide an already
- * filtered receipt collection. The timestamp is retained only for report
- * metadata and display.
- *
- * @param receipts - Receipts to aggregate.
- * @param since - Optional lower-bound metadata associated with `receipts`.
- * @returns Deterministically ordered report data.
+ * Groups by exact URL, network, and asset; keeps monetary arithmetic in BigInt.
+ * `since` is display metadata only, not a filter. Invalid settled amounts are
+ * excluded from monetary statistics and counted; receipt and settlement counts
+ * still include those calls. No currency conversion is performed.
  */
 export function buildReport(receipts: SpendReceipt[], since?: Date): Report {
-  const byUrl = new Map<string, SpendReceipt[]>();
+  const groups = new Map<string, SpendReceipt[]>();
   for (const r of receipts) {
-    const list = byUrl.get(r.resource.url) ?? [];
+    const key = JSON.stringify([r.network, r.asset, r.resource.url]);
+    const list = groups.get(key) ?? [];
     list.push(r);
-    byUrl.set(r.resource.url, list);
+    groups.set(key, list);
   }
-
-  const endpoints: EndpointStats[] = [...byUrl.entries()].map(([resourceUrl, rs]) => {
-    const settled = rs.filter((r) => r.settled);
-    const used = rs.filter((r) => r.outcome === "used");
-    const usedCosts = used.map(settledAmount).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const endpoints: EndpointStats[] = [...groups.values()].map((rs) => {
+    const amounts = rs.map(settledAmount);
+    const usedCosts = amounts.filter((amount, i): amount is bigint =>
+      rs[i].outcome === "used" && amount !== undefined
+    ).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
     const paid = rs.map(paidMs).filter((ms): ms is number => ms !== undefined).sort((a, b) => a - b);
     return {
-      resourceUrl,
+      resourceUrl: rs[0].resource.url,
+      network: rs[0].network,
+      asset: rs[0].asset,
       calls: rs.length,
-      settledCalls: settled.length,
-      spendAtomic: settled.reduce((sum, r) => sum + settledAmount(r), 0n),
+      settledCalls: rs.filter((r) => r.settled).length,
+      spendAtomic: amounts.reduce<bigint>((sum, amount) => sum + (amount ?? 0n), 0n),
+      invalidAmountCalls: amounts.filter((amount) => amount === undefined).length,
       medianCostPerUsedAtomic: medianBigint(usedCosts),
-      usedCalls: used.length,
+      usedCalls: rs.filter((r) => r.outcome === "used").length,
+      costSamples: usedCosts.length,
       p50PaidMs: percentile(paid, 50),
       p95PaidMs: percentile(paid, 95),
     };
   });
-  endpoints.sort((a, b) => (a.spendAtomic < b.spendAtomic ? 1 : a.spendAtomic > b.spendAtomic ? -1 : 0));
+  endpoints.sort((a, b) => compareText(a.network, b.network) || compareText(a.asset, b.asset) ||
+    (a.spendAtomic < b.spendAtomic ? 1 : a.spendAtomic > b.spendAtomic ? -1 : 0) ||
+    compareText(a.resourceUrl, b.resourceUrl));
 
+  const denominations = new Map<string, DenominationStats>();
+  for (const e of endpoints) {
+    const key = denominationKey(e);
+    const total = denominations.get(key) ?? {
+      network: e.network, asset: e.asset, calls: 0, settledCalls: 0, spendAtomic: 0n, invalidAmountCalls: 0,
+    };
+    total.calls += e.calls;
+    total.settledCalls += e.settledCalls;
+    total.spendAtomic += e.spendAtomic;
+    total.invalidAmountCalls += e.invalidAmountCalls;
+    denominations.set(key, total);
+  }
   return {
-    since,
-    endpoints,
+    since, endpoints, denominations: [...denominations.values()],
     totals: {
       calls: receipts.length,
-      settledCalls: endpoints.reduce((n, e) => n + e.settledCalls, 0),
-      spendAtomic: endpoints.reduce((sum, e) => sum + e.spendAtomic, 0n),
+      settledCalls: endpoints.reduce((sum, e) => sum + e.settledCalls, 0),
+      invalidAmountCalls: endpoints.reduce((sum, e) => sum + e.invalidAmountCalls, 0),
     },
   };
 }
 
-/**
- * Formats an integer atomic amount as a fixed-point decimal string.
- *
- * @param amount - Signed amount in atomic units.
- * @param decimals - Non-negative number of asset decimal places.
- * @returns Fixed-point value without locale-specific separators.
- *
- * @example
- * formatAtomic(5001n, 6); // "0.005001"
- */
+/** Fixed-point formatting with bounded decimal places (0–255). */
 export function formatAtomic(amount: bigint, decimals: number): string {
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+    throw new Error("x402-spend: decimals must be an integer from 0 to 255");
+  }
   const negative = amount < 0n;
   const abs = (negative ? -amount : amount).toString().padStart(decimals + 1, "0");
   const whole = abs.slice(0, abs.length - decimals) || "0";
@@ -171,53 +160,53 @@ export function formatAtomic(amount: bigint, decimals: number): string {
   return `${negative ? "-" : ""}${whole}${frac}`;
 }
 
-/**
- * Renders report data as an aligned plain-text table.
- *
- * @param report - Aggregated data produced by {@link buildReport}.
- * @param options - Formatting options.
- * @param options.decimals - Asset decimals used to display atomic amounts; defaults to `6`.
- * @returns A complete report suitable for terminal output.
- */
+/** Render a separate labeled table per denomination; default to atomic units. */
 export function formatReport(
   report: Report,
   options: {
-    /** Asset decimals used to display atomic amounts; defaults to `6`. */
+    /** Convenience override allowed only when the report has a single denomination. */
     decimals?: number;
+    /** Per-network/asset decimal configuration takes precedence over the convenience override. */
+    assetDecimals?: AssetDecimals[];
   } = {}
 ): string {
-  const decimals = options.decimals ?? 6;
-  const fmt = (amount: bigint) => formatAtomic(amount, decimals);
-  const pct = (n: number, of: number) => (of === 0 ? "-" : `${Math.round((100 * n) / of)}%`);
-  const ms = (e: EndpointStats) => (e.p50PaidMs === undefined ? "-" : `${e.p50PaidMs}/${e.p95PaidMs}`);
-
-  const rows = report.endpoints.map((e) => [
-    e.resourceUrl,
-    String(e.calls),
-    pct(e.settledCalls, e.calls),
-    fmt(e.spendAtomic),
-    e.medianCostPerUsedAtomic === undefined ? `- (0 used)` : `${fmt(e.medianCostPerUsedAtomic)} (${e.usedCalls} used)`,
-    ms(e),
-  ]);
-  rows.push([
-    "TOTAL",
-    String(report.totals.calls),
-    pct(report.totals.settledCalls, report.totals.calls),
-    fmt(report.totals.spendAtomic),
-    "",
-    "",
-  ]);
-
-  const header = ["ENDPOINT", "CALLS", "SETTLED", "SPEND", "MED COST/USED", "P50/P95 PAID MS"];
-  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
-  const line = (cells: string[]) =>
-    cells.map((c, i) => (i === 0 ? c.padEnd(widths[i]) : c.padStart(widths[i]))).join("  ").trimEnd();
-
+  if (options.decimals !== undefined) {
+    formatAtomic(0n, options.decimals);
+    if (report.denominations.length > 1) {
+      throw new Error("x402-spend: --decimals requires a single denomination; use --asset-decimals for each network/asset");
+    }
+  }
+  const scales = new Map<string, number>();
+  for (const entry of options.assetDecimals ?? []) {
+    formatAtomic(0n, entry.decimals);
+    const key = denominationKey(entry);
+    if (scales.has(key) && scales.get(key) !== entry.decimals) {
+      throw new Error(`x402-spend: conflicting decimals for ${entry.network}/${entry.asset}`);
+    }
+    scales.set(key, entry.decimals);
+  }
   const period = report.since ? `since ${report.since.toISOString()}` : "all time";
-  return [
-    `x402-spend report — ${period} · amounts are atomic units ÷ 10^${decimals}`,
-    "",
-    line(header),
-    ...rows.map(line),
-  ].join("\n");
+  const output = [`x402-spend report — ${period} · ${report.totals.calls} calls · ${report.totals.settledCalls} settled`];
+  if (report.denominations.length === 0) output.push("", "No receipts in this period.");
+  const pct = (n: number, of: number) => of === 0 ? "-" : `${Math.round((100 * n) / of)}%`;
+  for (const d of report.denominations) {
+    const decimals = scales.get(denominationKey(d)) ?? options.decimals;
+    const fmt = (amount: bigint) => decimals === undefined ? String(amount) : formatAtomic(amount, decimals);
+    const endpoints = report.endpoints.filter((e) => e.network === d.network && e.asset === d.asset);
+    const rows = endpoints.map((e) => [
+      e.resourceUrl, String(e.calls), pct(e.settledCalls, e.calls), fmt(e.spendAtomic),
+      `${e.medianCostPerUsedAtomic === undefined ? "-" : fmt(e.medianCostPerUsedAtomic)} (${e.costSamples === e.usedCalls ? `${e.usedCalls} used` : `${e.costSamples}/${e.usedCalls} used samples`})`,
+      e.p50PaidMs === undefined ? "-" : `${e.p50PaidMs}/${e.p95PaidMs}`,
+    ]);
+    rows.push(["TOTAL", String(d.calls), pct(d.settledCalls, d.calls), fmt(d.spendAtomic), "", ""]);
+    const header = ["ENDPOINT", "CALLS", "SETTLED", "SPEND", "MED COST/USED", "P50/P95 PAID MS"];
+    const widths = header.map((h, i) => rows.reduce((width, row) => Math.max(width, row[i].length), h.length));
+    const line = (cells: string[]) => cells.map((c, i) => i === 0 ? c.padEnd(widths[i]) : c.padStart(widths[i])).join("  ").trimEnd();
+    output.push("", `${d.network} · ${d.asset} · amounts are atomic units${decimals === undefined ? " (decimals unknown)" : ` ÷ 10^${decimals}`}`);
+    if (d.invalidAmountCalls) {
+      output.push(`WARNING: ${d.invalidAmountCalls} settled receipt(s) with invalid amounts excluded from monetary statistics; spend is partial.`);
+    }
+    output.push("", line(header), ...rows.map(line));
+  }
+  return output.join("\n");
 }

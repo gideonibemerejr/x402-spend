@@ -33,6 +33,30 @@ export interface SpendStore {
   label(id: string, outcome: Outcome, note?: string): Promise<void>;
 }
 
+/**
+ * Receipt persistence failed. `cause` is the storage error; `receipt` can be
+ * inspected or retained for storage recovery without repeating the paid call.
+ * A response means the request returned before persistence failed. It does not
+ * imply settlement succeeded: inspect the receipt's settlement fields.
+ * Custom stores may reject after committing, so retry safety belongs to the store.
+ */
+export class SpendPersistenceError extends Error {
+  readonly receipt: SpendReceipt;
+  readonly response?: Response;
+  readonly requestError?: unknown;
+
+  constructor(receipt: SpendReceipt, cause: unknown, result: CallResult) {
+    super("x402-spend: receipt persistence failed; the payment may already have completed", { cause });
+    this.name = "SpendPersistenceError";
+    this.receipt = receipt;
+    if (result.ok) this.response = result.response;
+    else this.requestError = result.error;
+  }
+}
+
+/** Explicit outcome also preserves falsy thrown values, including undefined. */
+type CallResult = { ok: true; response: Response } | { ok: false; error: unknown };
+
 /** Options accepted by {@link Spend.fetch}. */
 export interface SpendFetchInit extends RequestInit {
   /** Optional caller-defined category copied onto the receipt for later aggregation. */
@@ -56,7 +80,7 @@ export interface Spend {
    * @param input - Request URL or existing `Request`.
    * @param init - Standard fetch options plus an optional task classification.
    * @returns The final response produced by the x402 wrapper.
-   * @throws The original request, payment creation, or persistence error.
+   * @throws The original request/payment error, or `SpendPersistenceError` if recording fails.
    */
   fetch(input: RequestInfo | URL, init?: SpendFetchInit): Promise<Response>;
   /**
@@ -268,18 +292,18 @@ export function createMeter(client: x402Client, store: SpendStore, fetchImpl: ty
    * Builds and persists a receipt if the call reached a payment decision.
    *
    * @param call - Isolated state accumulated for the logical call.
-   * @param finalStatus - HTTP status ultimately returned to the caller.
-   * @param err - Error thrown while resolving the call, when applicable.
+   * @param result - Response or rejection from the request, before persistence.
    */
-  async function finalize(call: CallContext, finalStatus: number | undefined, err?: unknown): Promise<void> {
+  async function finalize(call: CallContext, result: CallResult): Promise<void> {
+    const err = result.ok ? undefined : result.error;
     // No hook fired: either a free call (nothing to record), or the client
     // refused the offer before onBeforePaymentCreation (spend controls, no
     // matching scheme) — record the refusal, priced at the cheapest offer.
     const wire =
-      call.wire ?? (err && call.paymentRequired402 ? wireFromRefusal(call.paymentRequired402) : undefined);
+      call.wire ?? (!result.ok && call.paymentRequired402 ? wireFromRefusal(call.paymentRequired402) : undefined);
     if (!wire) return;
-    const settle: Settle = call.settle ?? { settled: false };
-    if (!settle.failure && err) {
+    const settle: Settle = { ...(call.settle ?? { settled: false }) };
+    if (!settle.failure && !result.ok) {
       settle.failure = call.transportError
         ? { stage: "transport", reason: call.transportError.message }
         : { stage: "payload", reason: err instanceof Error ? err.message : String(err) };
@@ -293,32 +317,38 @@ export function createMeter(client: x402Client, store: SpendStore, fetchImpl: ty
       ...settle,
       legs: call.legs,
       totalMs: Date.now() - call.started,
-      status: finalStatus ?? call.legs[call.legs.length - 1]?.status ?? 0,
+      status: result.ok ? result.response.status : (call.legs[call.legs.length - 1]?.status ?? 0),
       outcome: "unlabeled",
       taskClass: call.taskClass,
     };
-    await store.insert(receipt);
+    try {
+      await store.insert(receipt);
+    } catch (cause) {
+      throw new SpendPersistenceError(receipt, cause, result);
+    }
     lastId = call.id;
   }
 
   return {
     async fetch(input, init) {
+      const request = new Request(input, init);
       const call: CallContext = {
         id: randomUUID(),
         started: Date.now(),
-        method: input instanceof Request ? input.method : (init?.method ?? "GET").toUpperCase(),
+        method: request.method,
         taskClass: init?.taskClass,
         legs: [],
         paidLegs: 0,
       };
+      let result: CallResult;
       try {
-        const response = await als.run(call, () => wrapped(input, init));
-        await finalize(call, response.status);
-        return response;
-      } catch (err) {
-        await finalize(call, undefined, err);
-        throw err;
+        result = { ok: true, response: await als.run(call, () => wrapped(request)) };
+      } catch (error) {
+        result = { ok: false, error };
       }
+      await finalize(call, result);
+      if (!result.ok) throw result.error;
+      return result.response;
     },
     label: (id, outcome, note) => store.label(id, outcome, note),
     last: () => lastId,
