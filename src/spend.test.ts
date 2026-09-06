@@ -20,7 +20,7 @@ import {
   decodePaymentSignatureHeader,
 } from "@x402/core/http";
 import type { PaymentRequired, PaymentRequirements, SchemeNetworkClient } from "@x402/core/types";
-import { createMeter, SpendPersistenceError, type SpendStore } from "./meter.js";
+import { createSpend, SpendPersistenceError, type SpendStore } from "./spend.js";
 import type { Outcome, SpendReceipt } from "./receipt.js";
 
 const NETWORK = "eip155:84532";
@@ -36,7 +36,15 @@ class MemoryStore implements SpendStore {
   async insert(r: SpendReceipt) {
     this.receipts.push(r);
   }
-  async label(_id: string, _outcome: Outcome, _note?: string) {}
+  async label(id: string, outcome: Outcome, note?: string) {
+    const receipt = this.receipts.find((r) => r.id === id);
+    if (!receipt) return;
+    receipt.outcome = outcome;
+    if (note !== undefined) receipt.outcomeNote = note;
+  }
+  async get(id: string) {
+    return this.receipts.find((r) => r.id === id);
+  }
 }
 
 function paymentRequiredFor(url: string): PaymentRequired {
@@ -107,10 +115,10 @@ test("two concurrent paid calls to the same URL produce two correct, distinct re
   const { server, url } = await startFakeServer();
   try {
     const store = new MemoryStore();
-    const meter = createMeter(makeClient(), store);
+    const spend = createSpend(makeClient(), store);
     const resource = `${url}/paid`;
 
-    const [resA, resB] = await Promise.all([meter.fetch(resource), meter.fetch(resource)]);
+    const [resA, resB] = await Promise.all([spend.fetch(resource), spend.fetch(resource)]);
 
     // Both calls succeeded and got distinct settlements.
     const bodyA = (await resA.json()) as { nonce: number };
@@ -174,8 +182,8 @@ test("free (non-402) calls are not recorded", async () => {
   await once(server, "listening");
   try {
     const store = new MemoryStore();
-    const meter = createMeter(makeClient(), store);
-    const res = await meter.fetch(`http://localhost:${(server.address() as { port: number }).port}/free`);
+    const spend = createSpend(makeClient(), store);
+    const res = await spend.fetch(`http://localhost:${(server.address() as { port: number }).port}/free`);
     assert.equal(res.status, 200);
     assert.equal(store.receipts.length, 0);
   } finally {
@@ -183,20 +191,20 @@ test("free (non-402) calls are not recorded", async () => {
   }
 });
 
-test("smoke: meter → sqlite store → label(last()) → report", async () => {
+test("smoke: spend → sqlite store → label(last()) → report", async () => {
   const { SqliteSpendStore } = await import("./store.js");
   const { buildReport, formatReport } = await import("./report.js");
   const { server, url } = await startFakeServer();
   try {
     const store = new SqliteSpendStore(":memory:");
-    const meter = createMeter(makeClient(), store);
+    const spend = createSpend(makeClient(), store);
 
-    await meter.fetch(`${url}/paid`, { taskClass: "web-search" });
-    assert.ok(meter.last());
-    await meter.label(meter.last()!, "used", "worth it");
+    await spend.fetch(`${url}/paid`, { taskClass: "web-search" });
+    assert.ok(spend.last());
+    await spend.label(spend.last()!, "used", "worth it");
 
     const [r] = store.list();
-    assert.equal(r.id, meter.last());
+    assert.equal(r.id, spend.last());
     assert.equal(r.outcome, "used");
     assert.equal(r.outcomeNote, "worth it");
     assert.equal(r.taskClass, "web-search");
@@ -236,10 +244,10 @@ test("a 402 refused under spend controls still produces a receipt (settled: fals
       scheme: "exact",
       createPaymentPayload: async (x402Version) => ({ x402Version, payload: {} }),
     });
-    const meter = createMeter(client, store);
+    const spend = createSpend(client, store);
     const resource = `http://localhost:${(server.address() as { port: number }).port}/paid`;
 
-    await assert.rejects(() => meter.fetch(resource), /spendControls/);
+    await assert.rejects(() => spend.fetch(resource), /spendControls/);
 
     assert.equal(store.receipts.length, 1);
     const r = store.receipts[0];
@@ -289,13 +297,14 @@ test("storage failure after payment attempts one insert and preserves the respon
   const store: SpendStore = {
     insert: async (r) => { attempts.push(r); if (fail) throw failure; },
     label: async () => {},
+    get: async () => undefined,
   };
-  const meter = createMeter(makeClient(), store, fakeTransport());
-  await meter.fetch("https://api.test/paid");
-  const previousId = meter.last();
+  const spend = createSpend(makeClient(), store, fakeTransport());
+  await spend.fetch("https://api.test/paid");
+  const previousId = spend.last();
   fail = true;
   let caught: unknown;
-  try { await meter.fetch("https://api.test/paid"); } catch (error) { caught = error; }
+  try { await spend.fetch("https://api.test/paid"); } catch (error) { caught = error; }
   assert.equal(attempts.length, 2, "one successful write and one failed write, with no retry");
   assert.ok(caught instanceof SpendPersistenceError);
   const error = caught;
@@ -307,18 +316,19 @@ test("storage failure after payment attempts one insert and preserves the respon
   assert.equal(error.receipt.failure, undefined);
   assert.equal(await error.response.text(), "delivered");
   assert.equal(error.requestError, undefined);
-  assert.equal(meter.last(), previousId);
+  assert.equal(spend.last(), previousId);
 });
 
 test("transport and persistence failures remain inspectable without a second insert", async () => {
   const transportFailure = new Error("connection reset");
   const storageFailure = new Error("database unavailable");
   let attempts = 0;
-  const meter = createMeter(makeClient(), {
+  const spend = createSpend(makeClient(), {
     insert: async () => { attempts++; throw storageFailure; }, label: async () => {},
+    get: async () => undefined,
   }, fakeTransport(async () => { throw transportFailure; }));
   let caught: unknown;
-  try { await meter.fetch("https://api.test/paid"); } catch (error) { caught = error; }
+  try { await spend.fetch("https://api.test/paid"); } catch (error) { caught = error; }
   assert.equal(attempts, 1);
   assert.ok(caught instanceof SpendPersistenceError);
   const error = caught;
@@ -327,15 +337,15 @@ test("transport and persistence failures remain inspectable without a second ins
   assert.equal(error.response, undefined);
   assert.equal(error.receipt.failure?.stage, "transport");
   assert.equal(error.receipt.status, 0);
-  assert.equal(meter.last(), undefined);
+  assert.equal(spend.last(), undefined);
 });
 
 test("successful persistence preserves the original rejected value, even undefined", async () => {
   for (const failure of [new Error("connection reset"), undefined]) {
     const store = new MemoryStore();
-    const meter = createMeter(makeClient(), store, fakeTransport(async () => { throw failure; }));
+    const spend = createSpend(makeClient(), store, fakeTransport(async () => { throw failure; }));
     let rejected = false;
-    try { await meter.fetch("https://api.test/paid"); } catch (error) {
+    try { await spend.fetch("https://api.test/paid"); } catch (error) {
       rejected = true;
       assert.equal(error, failure);
     }
@@ -349,12 +359,140 @@ test("Request init overrides match the recorded method and preserve body across 
   const store = new MemoryStore();
   const seen: Array<[string, string]> = [];
   const transport = fakeTransport();
-  const meter = createMeter(makeClient(), store, async (input, init) => {
+  const spend = createSpend(makeClient(), store, async (input, init) => {
     const request = new Request(input, init);
     seen.push([request.method, await request.clone().text()]);
     return transport(request);
   });
-  await meter.fetch(new Request("https://api.test/paid"), { method: "post", body: "hello" });
+  await spend.fetch(new Request("https://api.test/paid"), { method: "post", body: "hello" });
   assert.deepEqual(seen, [["POST", "hello"], ["POST", "hello"]]);
   assert.equal(store.receipts[0].method, "POST");
+});
+
+/**
+ * A paid response that names the payer as well as the transaction. The default
+ * fake omits the payer, which leaves a receipt with nothing checkable.
+ */
+const settledTransport = () =>
+  fakeTransport(async () => new Response("delivered", {
+    headers: {
+      "PAYMENT-RESPONSE": encodePaymentResponseHeader({
+        success: true, transaction: "0xtx-review", network: NETWORK, amount: "5000",
+        payer: "0xpayer-review",
+      }),
+    },
+  }));
+
+test("review posting is off unless configured, and never blocks the local label", async () => {
+  const store = new MemoryStore();
+  const spend = createSpend(makeClient(), store, { fetchImpl: settledTransport() });
+  await spend.fetch("https://api.test/paid");
+
+  const result = await spend.label(spend.last()!, "used", "worth it");
+  assert.deepEqual(result, { posted: false });
+  assert.equal(store.receipts[0].outcome, "used");
+  assert.equal(store.receipts[0].outcomeNote, "worth it");
+});
+
+test("a configured review endpoint receives exactly one post carrying no receipt internals", async () => {
+  const store = new MemoryStore();
+  const posts: { url: string; body: Record<string, unknown> }[] = [];
+  const reviewFetch: typeof fetch = async (input, init) => {
+    posts.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+    return Response.json({ id: "srv-1", status: "verified", verified: true }, { status: 201 });
+  };
+
+  const spend = createSpend(makeClient(), store, {
+    fetchImpl: settledTransport(),
+    review: { endpoint: "https://reviews.test/v1/reviews", fetchImpl: reviewFetch },
+  });
+  await spend.fetch("https://api.test/paid?key=secret#frag", { taskClass: "web-search" });
+  const result = await spend.label(spend.last()!, "used", "worth it");
+
+  assert.deepEqual(result, { posted: true, status: "verified" });
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, "https://reviews.test/v1/reviews");
+
+  const body = posts[0].body;
+  // Query string and fragment carry credentials often enough that publishing
+  // one unedited would leak a key.
+  assert.equal(body.resourceUrl, "https://api.test/paid");
+  assert.equal(body.outcome, "used");
+  assert.equal(body.note, "worth it");
+  assert.equal(body.taskClass, "web-search");
+  assert.equal(body.schema, 1);
+  assert.ok(body.transaction);
+  assert.ok(body.payer);
+  for (const local of ["id", "legs", "status", "method", "offeredAlternatives", "outcomeNote", "totalMs"]) {
+    assert.equal(Object.hasOwn(body, local), false, `${local} must stay local`);
+  }
+});
+
+test("201, 200 and 202 all count as posted, and 202 reports the review as pending", async () => {
+  for (const [status, expected] of [[201, "verified"], [200, "verified"], [202, "pending"]] as const) {
+    const store = new MemoryStore();
+    const spend = createSpend(makeClient(), store, {
+      fetchImpl: settledTransport(),
+      review: {
+        endpoint: "https://reviews.test/v1/reviews",
+        fetchImpl: async () => Response.json({ id: "x", status: expected }, { status }),
+      },
+    });
+    await spend.fetch("https://api.test/paid");
+    assert.deepEqual(await spend.label(spend.last()!, "used"), { posted: true, status: expected });
+  }
+});
+
+test("a review server that is down, slow or unhappy never reaches the caller", async () => {
+  const cases: [string, typeof fetch, RegExp][] = [
+    ["refused", async () => { throw new Error("ECONNREFUSED"); }, /ECONNREFUSED/],
+    ["500", async () => new Response("boom", { status: 500 }), /returned 500/],
+    ["422", async () => new Response("bad asset", { status: 422 }), /returned 422: bad asset/],
+    ["timeout", (_i, init) => new Promise((_resolve, reject) => {
+      (init?.signal as AbortSignal).addEventListener("abort", () => reject(new Error("The operation was aborted")));
+    }), /abort/i],
+  ];
+  for (const [name, reviewFetch, reason] of cases) {
+    const store = new MemoryStore();
+    const spend = createSpend(makeClient(), store, {
+      fetchImpl: settledTransport(),
+      review: { endpoint: "https://reviews.test/v1/reviews", fetchImpl: reviewFetch, timeoutMs: 20 },
+    });
+    await spend.fetch("https://api.test/paid");
+
+    const result = await spend.label(spend.last()!, "used", "worth it");
+    assert.equal(result.posted, false, name);
+    assert.match(result.error ?? "", reason, name);
+    // The label is the caller's data and is written regardless.
+    assert.equal(store.receipts[0].outcome, "used", name);
+  }
+});
+
+test("nothing is posted without a settlement to verify, or for an unlabeled verdict", async () => {
+  const store = new MemoryStore();
+  let posts = 0;
+  const spend = createSpend(makeClient(), store, {
+    fetchImpl: fakeTransport(async () => { throw new Error("connection reset"); }),
+    review: {
+      endpoint: "https://reviews.test/v1/reviews",
+      fetchImpl: async () => { posts++; return Response.json({}, { status: 201 }); },
+    },
+  });
+  try { await spend.fetch("https://api.test/paid"); } catch { /* transport failure is expected */ }
+
+  const id = store.receipts[0].id;
+  assert.equal(store.receipts[0].transaction, undefined);
+  assert.deepEqual(await spend.label(id, "failed"), { posted: false, error: "no settlement to verify" });
+
+  assert.deepEqual(await spend.label(id, "unlabeled"),
+    { posted: false, error: "unlabeled is not a publishable verdict" });
+  assert.equal(posts, 0);
+});
+
+test("the deprecated positional fetch form still works for one release", async () => {
+  const store = new MemoryStore();
+  const spend = createSpend(makeClient(), store, settledTransport());
+  await spend.fetch("https://api.test/paid");
+  assert.equal(store.receipts.length, 1);
+  assert.deepEqual(await spend.label(spend.last()!, "used"), { posted: false });
 });

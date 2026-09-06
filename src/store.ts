@@ -1,7 +1,7 @@
 /** SQLite persistence for x402 spend receipts. */
 import { DatabaseSync } from "node:sqlite";
 import type { Outcome, SpendReceipt } from "./receipt.js";
-import type { SpendStore } from "./meter.js";
+import type { SpendStore } from "./spend.js";
 
 /** Default database path used by {@link SqliteSpendStore} and the report CLI. */
 export const DEFAULT_DB_PATH = "x402-spend.db";
@@ -51,7 +51,7 @@ function paidMs(receipt: SpendReceipt): number | undefined {
  *
  * Each row stores the complete receipt as JSON for lossless round trips and
  * duplicates report-relevant scalar fields into indexed columns. Databases use
- * WAL journaling so readers can coexist with the meter's writes.
+ * WAL journaling so readers can coexist with the spend's writes.
  *
  * Call {@link SqliteSpendStore.close} when the store is no longer needed.
  */
@@ -117,6 +117,19 @@ export class SqliteSpendStore implements SpendStore {
    * @returns A promise resolved after the synchronous SQLite update completes.
    * @throws When the database contains no receipt with `id`.
    */
+  /**
+   * Reads back one stored receipt.
+   *
+   * @param id - Receipt UUID.
+   * @returns The receipt as stored, or `undefined` when no receipt has that id.
+   */
+  async get(id: string): Promise<SpendReceipt | undefined> {
+    const row = this.db.prepare(`SELECT json FROM receipts WHERE id = ?`).get(id) as
+      | { json: string }
+      | undefined;
+    return row ? (JSON.parse(row.json) as SpendReceipt) : undefined;
+  }
+
   async label(id: string, outcome: Outcome, note?: string): Promise<void> {
     const changed = this.db
       .prepare(

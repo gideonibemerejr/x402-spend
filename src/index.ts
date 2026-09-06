@@ -5,7 +5,21 @@ export {
   type Outcome,
   type SpendReceipt,
 } from "./receipt.js";
-export { createMeter, SpendPersistenceError, type Spend, type SpendFetchInit, type SpendStore } from "./meter.js";
+export {
+  createSpend,
+  SpendPersistenceError,
+  type Spend,
+  type SpendFetchInit,
+  type SpendOptions,
+  type SpendStore,
+} from "./spend.js";
+export {
+  buildSubmission,
+  type LabelResult,
+  type ReviewOptions,
+  type ReviewOutcome,
+  type ReviewSubmission,
+} from "./review.js";
 export { DEFAULT_DB_PATH, SqliteSpendStore } from "./store.js";
 export {
   buildReport,

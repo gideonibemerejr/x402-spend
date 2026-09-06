@@ -1,4 +1,4 @@
-/** Meter creation and per-call x402 payment instrumentation. */
+/** Spend creation and per-call x402 payment instrumentation. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { x402Client } from "@x402/core/client";
@@ -6,9 +6,10 @@ import { decodePaymentRequiredHeader } from "@x402/core/http";
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { wrapFetchWithPayment } from "@x402/fetch";
 import { RECEIPT_SCHEMA_VERSION, type Leg, type Outcome, type SpendReceipt } from "./receipt.js";
+import { buildSubmission, postReview, type LabelResult, type ReviewOptions } from "./review.js";
 
 /**
- * Persistence contract required by {@link createMeter}.
+ * Persistence contract required by {@link createSpend}.
  *
  * Implementations may store receipts locally or remotely, but should preserve
  * receipt IDs and make label updates durable before resolving.
@@ -31,6 +32,16 @@ export interface SpendStore {
    * @throws When no receipt exists for `id`, or when persistence fails.
    */
   label(id: string, outcome: Outcome, note?: string): Promise<void>;
+  /**
+   * Reads back a stored receipt.
+   *
+   * Needed to publish a review, which is assembled from the receipt rather than
+   * from whatever the caller happens to still hold.
+   *
+   * @param id - Receipt UUID.
+   * @returns The receipt, or `undefined` when no receipt has that id.
+   */
+  get(id: string): Promise<SpendReceipt | undefined>;
 }
 
 /**
@@ -57,6 +68,18 @@ export class SpendPersistenceError extends Error {
 /** Explicit outcome also preserves falsy thrown values, including undefined. */
 type CallResult = { ok: true; response: Response } | { ok: false; error: unknown };
 
+/** Wiring for {@link createSpend}. */
+export interface SpendOptions {
+  /** Fetch implementation to instrument; defaults to global `fetch`. */
+  fetchImpl?: typeof fetch;
+  /**
+   * Where to publish labeled receipts as verified reviews. Omit or pass `false`
+   * to keep receipts local, which is the default: publishing is opt-in per
+   * spend because a review is public and names the payer address.
+   */
+  review?: ReviewOptions | false;
+}
+
 /** Options accepted by {@link Spend.fetch}. */
 export interface SpendFetchInit extends RequestInit {
   /** Optional caller-defined category copied onto the receipt for later aggregation. */
@@ -64,7 +87,7 @@ export interface SpendFetchInit extends RequestInit {
 }
 
 /**
- * Instrumented x402 client returned by {@link createMeter}.
+ * Instrumented x402 client returned by {@link createSpend}.
  *
  * It behaves like `fetch` for callers while recording only requests that reach
  * a payment decision. It does not modify the client's schemes, signers, or
@@ -86,14 +109,19 @@ export interface Spend {
   /**
    * Assigns a caller-known outcome to a stored receipt.
    *
+   * The local write happens first and always. When review posting is
+   * configured, the label is then published as a review verified against the
+   * receipt's settlement; a failed post is reported, never thrown, and never
+   * undoes the local label.
+   *
    * @param id - Receipt UUID to update.
    * @param outcome - Whether the paid result was used, retried, discarded, or failed.
    * @param note - Optional explanation for the outcome.
-   * @returns A promise that resolves after the store applies the label.
+   * @returns Whether a review was published, and why not when it was not.
    */
-  label(id: string, outcome: Outcome, note?: string): Promise<void>;
+  label(id: string, outcome: Outcome, note?: string): Promise<LabelResult>;
   /**
-   * Returns the ID of the receipt most recently finalized by this meter.
+   * Returns the ID of the receipt most recently finalized by this spend.
    *
    * With concurrent calls, “most recent” means the last call to finish, not the
    * last one started. Concurrent callers should retain their own receipt IDs.
@@ -184,8 +212,8 @@ function wireFromRefusal(paymentRequired: PaymentRequired): Wire | undefined {
  * Wraps an already-configured x402 client with spend metering.
  *
  * The supplied client continues to own schemes, signers, selection, and spend
- * controls. The meter registers additive observation hooks but never aborts,
- * recovers, filters, or otherwise controls a payment. Use one meter per client
+ * controls. It registers additive observation hooks but never aborts,
+ * recovers, filters, or otherwise controls a payment. Use one spend per client
  * because x402 client hook registration is permanent.
  *
  * Each logical call runs in its own `AsyncLocalStorage` context. This keeps
@@ -195,16 +223,30 @@ function wireFromRefusal(paymentRequired: PaymentRequired): Wire | undefined {
  *
  * @param client - Configured x402 client containing the caller's schemes and signers.
  * @param store - Destination for finalized receipts and later outcome labels.
- * @param fetchImpl - Fetch implementation to instrument; defaults to global `fetch`.
+ * @param options - Fetch implementation to instrument, and optional review publishing.
  * @returns A metered fetch interface bound to `client` and `store`.
  */
-export function createMeter(client: x402Client, store: SpendStore, fetchImpl: typeof fetch = fetch): Spend {
+export function createSpend(client: x402Client, store: SpendStore, options?: SpendOptions): Spend;
+/**
+ * @deprecated Pass `{ fetchImpl }` instead. The positional form is accepted for
+ * one release so 0.2 callers keep working, and is removed in 0.4.
+ */
+export function createSpend(client: x402Client, store: SpendStore, fetchImpl: typeof fetch): Spend;
+export function createSpend(
+  client: x402Client,
+  store: SpendStore,
+  optionsOrFetch: SpendOptions | typeof fetch = {}
+): Spend {
+  const options: SpendOptions =
+    typeof optionsOrFetch === "function" ? { fetchImpl: optionsOrFetch } : optionsOrFetch;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const review = options.review === false ? undefined : options.review;
   const als = new AsyncLocalStorage<CallContext>();
 
   client
     .onBeforePaymentCreation(async (ctx) => {
       const call = als.getStore();
-      if (!call) return; // client used outside the meter
+      if (!call) return; // client used outside the spend
       const r = ctx.selectedRequirements;
       const res = ctx.paymentRequired.resource;
       call.wire = {
@@ -350,7 +392,19 @@ export function createMeter(client: x402Client, store: SpendStore, fetchImpl: ty
       if (!result.ok) throw result.error;
       return result.response;
     },
-    label: (id, outcome, note) => store.label(id, outcome, note),
+    async label(id, outcome, note) {
+      // The local write happens first and always; publishing is best effort.
+      await store.label(id, outcome, note);
+      if (!review) return { posted: false };
+      if (outcome === "unlabeled") {
+        return { posted: false, error: "unlabeled is not a publishable verdict" };
+      }
+      const receipt = await store.get(id);
+      if (!receipt) return { posted: false, error: `no receipt with id ${id}` };
+      const submission = buildSubmission(receipt, outcome, note);
+      if (!submission) return { posted: false, error: "no settlement to verify" };
+      return postReview(submission, review, fetchImpl);
+    },
     last: () => lastId,
   };
 }

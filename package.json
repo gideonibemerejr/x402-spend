@@ -1,6 +1,6 @@
 {
   "name": "x402-spend",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A bank statement for your agent's x402 spend, with the column the bank can't fill in: was it worth it.",
   "type": "module",
   "license": "MIT",
@@ -24,17 +24,25 @@
   "scripts": {
     "build": "tsc -p .",
     "test": "npm run build && node --no-warnings --test \"dist/**/*.test.js\"",
-    "report": "node --no-warnings dist/cli.js report"
+    "report": "node --no-warnings dist/cli.js report",
+    "typecheck:examples": "tsc -p tsconfig.examples.json",
+    "example:seller": "node --env-file=.env examples/seller-sepolia.ts",
+    "example:live": "npm run build && node --env-file=.env examples/live-sepolia.ts"
   },
   "peerDependencies": {
     "@x402/core": ">=2.0.0",
     "@x402/fetch": ">=2.0.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^22.20.1",
     "@x402/core": "^2.25.0",
+    "@x402/evm": "^2.25.0",
+    "@x402/express": "^2.25.0",
     "@x402/extensions": "^2.25.0",
     "@x402/fetch": "^2.25.0",
-    "typescript": "^5.6.0"
+    "express": "^5.2.1",
+    "typescript": "^5.6.0",
+    "viem": "^2.56.3"
   }
 }
