@@ -41,6 +41,7 @@ Each row is a small proposed PR. Start with regression tests for behavior change
 | 2 | Correct report amounts and asset boundaries | Make spend totals trustworthy | M; report API decision |
 | 3 | Verify transport and protocol edge cases | Ensure receipts describe what actually happened | M; split by path |
 | 4 | Harden CLI, SQLite roundtrips, and package checks | Make the installed tool dependable | S–M; can be separate PRs |
+| 4b | Establish the release workflow | Make each published version traceable and verified | M; before the next npm release |
 | 5 | Dogfood two real testnet endpoints | Validate usefulness before broader product work | Caller-funded signer; target before Sept 15 |
 | 6 | Consolidate internals and contributor documentation | Reduce duplication after semantics are tested | S; after behavior fixes |
 | 7 | Improve labeling and report workflows | Help callers answer “was it worth it?” | M; proposed API/product decisions |
@@ -114,6 +115,23 @@ Acceptance: each supported path has a deterministic chain-free regression test; 
 - Add release notes and migration examples for the removed Meter names. Respect the no-alias decision; choose the next version explicitly because consumers already exist.
 
 Acceptance: clear CLI errors, schema-consistent roundtrips, automated checks on clean checkouts, and an installable tarball with working exports/bin and documented runtime support.
+
+## 4b. Release workflow
+
+**Current repository state:** `package.json` remains at `0.1.0`, with build/test/report scripts but no packaging lifecycle hook. `.github` contains a PR template and no tracked CI or publishing workflow. This describes repository automation; npm account settings and the published version inventory still need checking before selecting a release version.
+
+Treat this as its own implementation PR, prepared alongside correctness work and completed before the next npm release. Proposed workflow:
+
+1. **Validate changes on PRs and main.** A `ci.yml` workflow installs from the lockfile, builds, and runs the existing tests across the declared supported Node range. It also checks the actual package tarball in a fresh consumer directory: public imports, TypeScript declarations, CLI help, and the receipt-to-report smoke path. Keep these tests chain-free.
+2. **Prepare a release PR.** Update `package.json`, the root package version in `package-lock.json`, and a changelog together. Include migration examples for public API changes. Proposed pre-1.0 policy: compatible fixes use patch releases; breaking API changes use minor releases and explicit migration notes. The removal of Meter-named exports warrants that breaking-change treatment. Verify npm's existing versions before choosing the next number. Start with a small manual release PR; evaluate release-management tooling only if maintaining it becomes repetitive.
+3. **Make release intent explicit.** After the release PR merges, a maintainer creates a `vX.Y.Z` tag at its commit. A `release.yml` workflow verifies that the tag matches the package/lockfile version and that the commit belongs to main. Ordinary merges run validation without publishing. Use a separate publishing job with only the permissions it needs, and serialize release runs.
+4. **Publish the artifact that was tested.** From the tagged commit, clean generated output, install locked dependencies, build, and pack once. Run the consumer checks against that `.tgz`, retain its checksum, and pass the same artifact to the publishing job. Validate package metadata, exports, declarations, executable entry point, license, and file exclusions. Keep a local prepack build as a convenience; publishing CI must still prove which artifact it tested.
+5. **Use npm trusted publishing.** Configure the package's trusted publisher for this repository and the exact GitHub Actions workflow, using a GitHub-hosted runner and a compatible pinned Node/npm toolchain. Give the publishing job `id-token: write`. npm supports OIDC authentication without a stored long-lived publishing token and automatically supplies provenance for supported GitHub Actions publishes. This requires package-owner configuration; it is not configured by this roadmap. [npm trusted publishing documentation](https://docs.npmjs.com/trusted-publishers/).
+6. **Separate preview and stable releases.** Explicitly publish prerelease versions such as `0.2.0-rc.1` under `next`; stable releases use `latest`. Check version/tag consistency before publishing so a preview cannot become the default install accidentally. [npm distribution tags](https://docs.npmjs.com/adding-dist-tags-to-packages/).
+7. **Verify and announce the result.** Install the exact published version from npm in a fresh directory, check its public API and CLI, and reconcile its registry integrity with the tested tarball. Create the GitHub Release against the same version tag, with the changelog, migration instructions, and verification result. If publishing succeeded but a later step failed, report that partial success clearly.
+8. **Handle retries and bad releases deliberately.** Before retrying a failed release job, check whether the version is already published and verify artifact identity; resume remaining verification/release-note steps when it matches, and stop on a mismatch. Published name/version pairs cannot be reused. For a bad release, publish a corrected version and document deprecation or moving the default distribution tag to a known-good version when appropriate. Moving a tag does not undo existing installs or lockfiles. [npm publishing rules](https://docs.npmjs.com/cli/v11/commands/npm-publish/), [npm distribution tags](https://docs.npmjs.com/adding-dist-tags-to-packages/).
+
+Acceptance: CI runs without publishing; version mismatches or failed tests prevent publication; the tested artifact is the published artifact; previews do not move `latest`; npm version, Git tag, and GitHub Release agree; retries detect an already-published artifact; the release runbook covers partial failure and corrective releases. Validate the workflow without publishing first, then exercise the complete path during a separately authorized release.
 
 ## 5. Testnet dogfood
 
