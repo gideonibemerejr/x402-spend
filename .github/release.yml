@@ -1,0 +1,33 @@
+# Categorises the notes GitHub generates for a release, by the labels on the PRs
+# merged since the previous tag. A PR lands in the first category it matches, so
+# order is precedence: "breaking" outranks everything because before 1.0 it is
+# what decides a minor bump rather than a patch.
+changelog:
+  exclude:
+    labels:
+      - duplicate
+      - invalid
+      - question
+      - wontfix
+  categories:
+    - title: 💥 Breaking changes
+      labels:
+        - breaking
+    - title: 🐛 Fixes
+      labels:
+        - bug
+    - title: ✨ Features
+      labels:
+        - enhancement
+    - title: ♿ Accessibility
+      labels:
+        - accessibility
+    - title: 📝 Documentation
+      labels:
+        - documentation
+    - title: 🧹 Internal
+      labels:
+        - refactor
+    - title: 📦 Other changes
+      labels:
+        - "*"
