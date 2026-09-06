@@ -5,11 +5,10 @@
  * the label is posted to a review server that checks it against the settlement
  * transaction on chain before accepting it.
  *
- * Build first, then run:
+ * Configure .env (see .env.example), start the seller, then:
  *
- *   npm run build
- *   EVM_PRIVATE_KEY=0x... RESOURCE_URL=https://some-paid-endpoint \
- *     node examples/live-sepolia.ts
+ *   npm run example:seller   # in one terminal
+ *   npm run example:live     # in another
  *
  * The account needs Base Sepolia USDC (0x036CbD53842c5426634e7929541eC2318f3dCF7e)
  * and nothing else; the facilitator broadcasts and pays the gas.
@@ -22,11 +21,13 @@ import { createSpend, SqliteSpendStore } from "../dist/index.js";
 
 const PRIVATE_KEY = process.env.EVM_PRIVATE_KEY;
 const RESOURCE_URL = process.env.RESOURCE_URL;
-const REVIEWS_ENDPOINT =
-  process.env.REVIEWS_ENDPOINT ?? "https://x402-spend-reviews.g-764.workers.dev/v1/reviews";
+const REVIEW_ENDPOINT = process.env.REVIEW_ENDPOINT;
 
-if (!PRIVATE_KEY || !RESOURCE_URL) {
-  console.error("set EVM_PRIVATE_KEY and RESOURCE_URL");
+if (!PRIVATE_KEY || !RESOURCE_URL || !REVIEW_ENDPOINT) {
+  const missing = Object.entries({ EVM_PRIVATE_KEY: PRIVATE_KEY, RESOURCE_URL, REVIEW_ENDPOINT })
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
+  console.error(`missing in .env: ${missing.join(", ")} — see .env.example`);
   process.exit(1);
 }
 
@@ -37,7 +38,7 @@ registerExactEvmScheme(client, { signer: toClientEvmSigner(account) });
 const store = new SqliteSpendStore("live-sepolia.db");
 const spend = createSpend(client, store, {
   // Opt-in, per instance. Reviews are public and name the payer address.
-  review: { endpoint: REVIEWS_ENDPOINT },
+  review: { endpoint: REVIEW_ENDPOINT },
 });
 
 console.log(`paying as ${account.address}`);
@@ -68,7 +69,7 @@ if (result.posted) {
   const resource = new URL(receipt!.resource.url);
   resource.search = "";
   resource.hash = "";
-  const feed = new URL(REVIEWS_ENDPOINT);
+  const feed = new URL(REVIEW_ENDPOINT);
   feed.searchParams.set("resource", resource.toString());
   console.log(`published — read it back at ${feed}`);
 } else {
