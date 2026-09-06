@@ -63,4 +63,4 @@ Local only. Receipts go to a SQLite file on your machine; nothing leaves it in v
 
 ## Development roadmap
 
-See the [post-launch roadmap](docs/ROADMAP.md) for verified findings, incoming API changes, and the proposed order of reliability work and cleanup.
+See the [post-launch roadmap](docs/ROADMAP.md) for verified findings, current API contracts, and the proposed order of reliability work and cleanup.
