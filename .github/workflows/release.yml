@@ -1,0 +1,16 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: gh release create "$TAG" --verify-tag --generate-notes
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
