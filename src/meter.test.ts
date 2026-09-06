@@ -20,8 +20,8 @@ import {
   decodePaymentSignatureHeader,
 } from "@x402/core/http";
 import type { PaymentRequired, PaymentRequirements, SchemeNetworkClient } from "@x402/core/types";
-import { createMeter, type MeterStore } from "./meter.js";
-import type { MeterReceipt, Outcome } from "./receipt.js";
+import { createMeter, type SpendStore } from "./meter.js";
+import type { Outcome, SpendReceipt } from "./receipt.js";
 
 const NETWORK = "eip155:84532";
 const ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"; // testnet USDC
@@ -31,9 +31,9 @@ const AMOUNT = "10000"; // atomic units
 /** Paid-leg delay per nonce. Call holding nonce 1 must finish AFTER the one holding nonce 2. */
 const DELAY_MS: Record<number, number> = { 1: 250, 2: 25 };
 
-class MemoryStore implements MeterStore {
-  receipts: MeterReceipt[] = [];
-  async insert(r: MeterReceipt) {
+class MemoryStore implements SpendStore {
+  receipts: SpendReceipt[] = [];
+  async insert(r: SpendReceipt) {
     this.receipts.push(r);
   }
   async label(_id: string, _outcome: Outcome, _note?: string) {}
@@ -184,11 +184,11 @@ test("free (non-402) calls are not recorded", async () => {
 });
 
 test("smoke: meter → sqlite store → label(last()) → report", async () => {
-  const { SqliteMeterStore } = await import("./store.js");
+  const { SqliteSpendStore } = await import("./store.js");
   const { buildReport, formatReport } = await import("./report.js");
   const { server, url } = await startFakeServer();
   try {
-    const store = new SqliteMeterStore(":memory:");
+    const store = new SqliteSpendStore(":memory:");
     const meter = createMeter(makeClient(), store);
 
     await meter.fetch(`${url}/paid`, { taskClass: "web-search" });

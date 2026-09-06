@@ -15,9 +15,9 @@ Node ≥ 22.5 (the store is `node:sqlite` — no native deps).
 Wrap the x402 client you already have. The meter only observes; your client keeps owning schemes, signers, and spend controls.
 
 ```ts
-import { createMeter, SqliteMeterStore } from "x402-spend";
+import { createMeter, SqliteSpendStore } from "x402-spend";
 
-const meter = createMeter(client, new SqliteMeterStore()); // ./x402-spend.db
+const meter = createMeter(client, new SqliteSpendStore()); // ./x402-spend.db
 const res = await meter.fetch("https://api.example.com/search?q=x402", { taskClass: "web-search" });
 ```
 

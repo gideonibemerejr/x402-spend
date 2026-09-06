@@ -1,11 +1,12 @@
+/** Public API for x402 client spend receipts, persistence, and reporting. */
 export {
   RECEIPT_SCHEMA_VERSION,
   type Leg,
-  type MeterReceipt,
   type Outcome,
+  type SpendReceipt,
 } from "./receipt.js";
-export { createMeter, type Meter, type MeterFetchInit, type MeterStore } from "./meter.js";
-export { DEFAULT_DB_PATH, SqliteMeterStore } from "./store.js";
+export { createMeter, type Spend, type SpendFetchInit, type SpendStore } from "./meter.js";
+export { DEFAULT_DB_PATH, SqliteSpendStore } from "./store.js";
 export {
   buildReport,
   formatAtomic,

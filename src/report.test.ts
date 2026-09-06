@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildReport, formatAtomic, formatReport, parseSince } from "./report.js";
-import type { Leg, MeterReceipt, Outcome } from "./receipt.js";
+import type { Leg, Outcome, SpendReceipt } from "./receipt.js";
 
-function receipt(url: string, opts: { settled?: boolean; amount?: string; outcome?: Outcome; paidMs?: number } = {}): MeterReceipt {
+function receipt(url: string, opts: { settled?: boolean; amount?: string; outcome?: Outcome; paidMs?: number } = {}): SpendReceipt {
   const legs: Leg[] = [{ kind: "initial", status: 402, ms: 10 }];
   if (opts.paidMs !== undefined) legs.push({ kind: "paid", status: opts.settled === false ? 402 : 200, ms: opts.paidMs });
   return {
