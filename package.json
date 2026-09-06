@@ -10,7 +10,7 @@
     ".": "./dist/index.js"
   },
   "bin": {
-    "x402-spend": "./dist/cli.js"
+    "x402-spend": "dist/cli.js"
   },
   "files": [
     "dist",
