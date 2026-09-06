@@ -3,7 +3,7 @@
 import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { DEFAULT_DB_PATH, SqliteSpendStore } from "./store.js";
-import { buildReport, formatReport, parseSince, formatAtomic, type AssetDecimals } from "./report.js";
+import { buildReport, formatReport, parseSince, type AssetDecimals } from "./report.js";
 
 const USAGE = `usage: x402-spend report [--db path] [--since 7d] [--decimals 6] [--asset-decimals network/asset=6]
 
@@ -52,9 +52,10 @@ function main(): void {
 }
 
 function parseDecimals(value: string): number {
-  if (!/^\d+$/.test(value)) throw new Error("x402-spend: decimals must be an integer from 0 to 255");
   const decimals = Number(value);
-  formatAtomic(0n, decimals);
+  if (!/^\d+$/.test(value) || decimals > 255) {
+    throw new Error("x402-spend: decimals must be an integer from 0 to 255");
+  }
   return decimals;
 }
 

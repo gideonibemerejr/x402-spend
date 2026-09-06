@@ -20,12 +20,14 @@ export interface DenominationStats extends Denomination {
 /** Statistics for one exact resource URL and denomination. */
 export interface EndpointStats extends DenominationStats {
   resourceUrl: string;
-  /** Median effective cost of valid `used` samples; unsettled receipts still contribute zero. */
+  /** Median price of settled `used` samples; unsettled calls are unpriced, not zero. */
   medianCostPerUsedAtomic?: bigint;
   /** All receipts labeled used, including ones with invalid amounts. */
   usedCalls: number;
-  /** Number of used samples with a valid effective cost. */
+  /** Used calls that carry a valid settled price and back the median. */
   costSamples: number;
+  /** Used calls that never settled; unpriced, so they are kept out of the median. */
+  unsettledUsedCalls: number;
   p50PaidMs?: number;
   p95PaidMs?: number;
 }
@@ -91,7 +93,9 @@ const compareText = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
  * Groups by exact URL, network, and asset; keeps monetary arithmetic in BigInt.
  * `since` is display metadata only, not a filter. Invalid settled amounts are
  * excluded from monetary statistics and counted; receipt and settlement counts
- * still include those calls. No currency conversion is performed.
+ * still include those calls. Unsettled `used` calls have no price, so they are
+ * counted separately rather than entering the median as zero. No currency
+ * conversion is performed.
  */
 export function buildReport(receipts: SpendReceipt[], since?: Date): Report {
   const groups = new Map<string, SpendReceipt[]>();
@@ -104,7 +108,7 @@ export function buildReport(receipts: SpendReceipt[], since?: Date): Report {
   const endpoints: EndpointStats[] = [...groups.values()].map((rs) => {
     const amounts = rs.map(settledAmount);
     const usedCosts = amounts.filter((amount, i): amount is bigint =>
-      rs[i].outcome === "used" && amount !== undefined
+      rs[i].outcome === "used" && rs[i].settled && amount !== undefined
     ).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
     const paid = rs.map(paidMs).filter((ms): ms is number => ms !== undefined).sort((a, b) => a - b);
     return {
@@ -118,6 +122,7 @@ export function buildReport(receipts: SpendReceipt[], since?: Date): Report {
       medianCostPerUsedAtomic: medianBigint(usedCosts),
       usedCalls: rs.filter((r) => r.outcome === "used").length,
       costSamples: usedCosts.length,
+      unsettledUsedCalls: rs.filter((r) => r.outcome === "used" && !r.settled).length,
       p50PaidMs: percentile(paid, 50),
       p95PaidMs: percentile(paid, 95),
     };
@@ -149,10 +154,14 @@ export function buildReport(receipts: SpendReceipt[], since?: Date): Report {
 }
 
 /** Fixed-point formatting with bounded decimal places (0–255). */
-export function formatAtomic(amount: bigint, decimals: number): string {
+function assertDecimals(decimals: number): void {
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
     throw new Error("x402-spend: decimals must be an integer from 0 to 255");
   }
+}
+
+export function formatAtomic(amount: bigint, decimals: number): string {
+  assertDecimals(decimals);
   const negative = amount < 0n;
   const abs = (negative ? -amount : amount).toString().padStart(decimals + 1, "0");
   const whole = abs.slice(0, abs.length - decimals) || "0";
@@ -171,14 +180,14 @@ export function formatReport(
   } = {}
 ): string {
   if (options.decimals !== undefined) {
-    formatAtomic(0n, options.decimals);
+    assertDecimals(options.decimals);
     if (report.denominations.length > 1) {
       throw new Error("x402-spend: --decimals requires a single denomination; use --asset-decimals for each network/asset");
     }
   }
   const scales = new Map<string, number>();
   for (const entry of options.assetDecimals ?? []) {
-    formatAtomic(0n, entry.decimals);
+    assertDecimals(entry.decimals);
     const key = denominationKey(entry);
     if (scales.has(key) && scales.get(key) !== entry.decimals) {
       throw new Error(`x402-spend: conflicting decimals for ${entry.network}/${entry.asset}`);

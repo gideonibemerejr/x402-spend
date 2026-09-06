@@ -158,13 +158,23 @@ test("report preserves exact amounts, authorized fallback, empty data and since 
   assert.deepEqual(buildReport([]).denominations, []);
 });
 
-test("the separate unsettled-used metric decision remains unchanged", () => {
+test("unsettled used receipts are unpriced and stay out of the median", () => {
   const report = buildReport([
     receipt("http://api.test/x", { amount: "100", outcome: "used" }),
     receipt("http://api.test/x", { settled: false, outcome: "used" }),
   ]);
-  assert.equal(report.endpoints[0].medianCostPerUsedAtomic, 50n);
+  assert.equal(report.endpoints[0].medianCostPerUsedAtomic, 100n);
+  assert.equal(report.endpoints[0].costSamples, 1);
+  assert.equal(report.endpoints[0].unsettledUsedCalls, 1);
   assert.equal(report.endpoints[0].usedCalls, 2);
+});
+
+test("a used endpoint with no settled call reports no median at all", () => {
+  const report = buildReport([receipt("http://api.test/x", { settled: false, outcome: "used" })]);
+  assert.equal(report.endpoints[0].medianCostPerUsedAtomic, undefined);
+  assert.equal(report.endpoints[0].costSamples, 0);
+  assert.equal(report.endpoints[0].unsettledUsedCalls, 1);
+  assert.equal(report.endpoints[0].usedCalls, 1);
 });
 
 test("decimal formatting rejects invalid or unbounded scales", () => {
