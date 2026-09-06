@@ -26,7 +26,7 @@ export interface Leg {
   bytes?: number;
 }
 
-export interface MeterReceipt {
+export interface SpendReceipt {
   schema: typeof RECEIPT_SCHEMA_VERSION;
   /** UUID generated at call start. Also usable as an idempotency key for the payment-identifier extension. */
   id: string;

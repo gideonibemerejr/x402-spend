@@ -4,7 +4,7 @@
  */
 import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { DEFAULT_DB_PATH, SqliteMeterStore } from "./store.js";
+import { DEFAULT_DB_PATH, SqliteSpendStore } from "./store.js";
 import { buildReport, formatReport, parseSince } from "./report.js";
 
 const USAGE = `usage: x402-spend report [--db path] [--since 7d] [--decimals 6]
@@ -42,7 +42,7 @@ function main(): void {
   }
 
   const since = values.since ? parseSince(values.since) : undefined;
-  const store = new SqliteMeterStore(values.db);
+  const store = new SqliteSpendStore(values.db);
   try {
     console.log(formatReport(buildReport(store.list({ since }), since), { decimals }));
   } finally {

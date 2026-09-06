@@ -6,7 +6,7 @@
  * and only formatted at the edge, with a configurable `decimals` (default 6,
  * USDC). The report says which power of ten it divided by.
  */
-import type { MeterReceipt } from "./receipt.js";
+import type { SpendReceipt } from "./receipt.js";
 
 export interface EndpointStats {
   resourceUrl: string;
@@ -39,12 +39,12 @@ export function parseSince(input: string, now: Date = new Date()): Date {
   return new Date(parsed);
 }
 
-function settledAmount(r: MeterReceipt): bigint {
+function settledAmount(r: SpendReceipt): bigint {
   if (!r.settled) return 0n;
   return BigInt(r.amountSettled ?? r.amountAuthorized);
 }
 
-function paidMs(r: MeterReceipt): number | undefined {
+function paidMs(r: SpendReceipt): number | undefined {
   for (let i = r.legs.length - 1; i >= 0; i--) {
     const leg = r.legs[i];
     if (leg.kind === "paid" || leg.kind === "recovery") return leg.ms;
@@ -63,8 +63,8 @@ function percentile(sorted: number[], p: number): number | undefined {
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))];
 }
 
-export function buildReport(receipts: MeterReceipt[], since?: Date): Report {
-  const byUrl = new Map<string, MeterReceipt[]>();
+export function buildReport(receipts: SpendReceipt[], since?: Date): Report {
+  const byUrl = new Map<string, SpendReceipt[]>();
   for (const r of receipts) {
     const list = byUrl.get(r.resource.url) ?? [];
     list.push(r);

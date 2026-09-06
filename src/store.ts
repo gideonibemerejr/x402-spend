@@ -7,8 +7,8 @@
  * broken out and indexed, plus the scalars the report aggregates.
  */
 import { DatabaseSync } from "node:sqlite";
-import type { MeterReceipt, Outcome } from "./receipt.js";
-import type { MeterStore } from "./meter.js";
+import type { Outcome, SpendReceipt } from "./receipt.js";
+import type { SpendStore } from "./meter.js";
 
 export const DEFAULT_DB_PATH = "x402-spend.db";
 
@@ -38,7 +38,7 @@ CREATE INDEX IF NOT EXISTS idx_receipts_task_class   ON receipts (task_class);
 `;
 
 /** Latency of the paid leg that delivered (the recovery leg when there was one). */
-function paidMs(r: MeterReceipt): number | undefined {
+function paidMs(r: SpendReceipt): number | undefined {
   for (let i = r.legs.length - 1; i >= 0; i--) {
     const leg = r.legs[i];
     if (leg.kind === "paid" || leg.kind === "recovery") return leg.ms;
@@ -46,7 +46,7 @@ function paidMs(r: MeterReceipt): number | undefined {
   return undefined;
 }
 
-export class SqliteMeterStore implements MeterStore {
+export class SqliteSpendStore implements SpendStore {
   private readonly db: DatabaseSync;
 
   constructor(path: string = DEFAULT_DB_PATH) {
@@ -55,7 +55,7 @@ export class SqliteMeterStore implements MeterStore {
     this.db.exec(SCHEMA);
   }
 
-  async insert(r: MeterReceipt): Promise<void> {
+  async insert(r: SpendReceipt): Promise<void> {
     this.db
       .prepare(
         `INSERT INTO receipts (id, ts, resource_url, network, outcome, outcome_note, task_class,
@@ -94,11 +94,11 @@ export class SqliteMeterStore implements MeterStore {
   }
 
   /** Receipts at or after `since` (all of them when omitted), oldest first. */
-  list(opts: { since?: Date } = {}): MeterReceipt[] {
+  list(opts: { since?: Date } = {}): SpendReceipt[] {
     const rows = opts.since
       ? this.db.prepare("SELECT json FROM receipts WHERE ts >= ? ORDER BY ts").all(opts.since.toISOString())
       : this.db.prepare("SELECT json FROM receipts ORDER BY ts").all();
-    return rows.map((row) => JSON.parse((row as { json: string }).json) as MeterReceipt);
+    return rows.map((row) => JSON.parse((row as { json: string }).json) as SpendReceipt);
   }
 
   close(): void {

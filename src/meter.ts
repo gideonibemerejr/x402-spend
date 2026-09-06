@@ -27,21 +27,21 @@ import type { x402Client } from "@x402/core/client";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { wrapFetchWithPayment } from "@x402/fetch";
-import { RECEIPT_SCHEMA_VERSION, type Leg, type MeterReceipt, type Outcome } from "./receipt.js";
+import { RECEIPT_SCHEMA_VERSION, type Leg, type Outcome, type SpendReceipt } from "./receipt.js";
 
-export interface MeterStore {
-  insert(r: MeterReceipt): Promise<void>;
+export interface SpendStore {
+  insert(r: SpendReceipt): Promise<void>;
   label(id: string, outcome: Outcome, note?: string): Promise<void>;
 }
 
 /** Per-call `fetch` options. `taskClass` lands on the receipt (the seed of a unit of work). */
-export interface MeterFetchInit extends RequestInit {
+export interface SpendFetchInit extends RequestInit {
   taskClass?: string;
 }
 
-export interface Meter {
+export interface Spend {
   /** Drop-in paid fetch. Records a receipt for every call that reaches payment. */
-  fetch(input: RequestInfo | URL, init?: MeterFetchInit): Promise<Response>;
+  fetch(input: RequestInfo | URL, init?: SpendFetchInit): Promise<Response>;
   /** Attach the outcome — the column no bank can fill in. */
   label(id: string, outcome: Outcome, note?: string): Promise<void>;
   /**
@@ -53,7 +53,7 @@ export interface Meter {
 }
 
 type Wire = Pick<
-  MeterReceipt,
+  SpendReceipt,
   | "resource"
   | "x402Version"
   | "scheme"
@@ -64,7 +64,7 @@ type Wire = Pick<
   | "offeredAlternatives"
 >;
 
-type Settle = Pick<MeterReceipt, "settled" | "amountSettled" | "transaction" | "payer" | "failure">;
+type Settle = Pick<SpendReceipt, "settled" | "amountSettled" | "transaction" | "payer" | "failure">;
 
 /** One outer call's state. Created per meter.fetch(), carried by AsyncLocalStorage. */
 interface CallContext {
@@ -125,7 +125,7 @@ function wireFromRefusal(paymentRequired: PaymentRequired): Wire | undefined {
  * Wraps an already-configured x402Client with metering. The client owns
  * schemes/signers; the meter only observes (its hooks never abort or recover).
  */
-export function createMeter(client: x402Client, store: MeterStore, fetchImpl: typeof fetch = fetch): Meter {
+export function createMeter(client: x402Client, store: SpendStore, fetchImpl: typeof fetch = fetch): Spend {
   const als = new AsyncLocalStorage<CallContext>();
 
   client
@@ -226,7 +226,7 @@ export function createMeter(client: x402Client, store: MeterStore, fetchImpl: ty
         ? { stage: "transport", reason: call.transportError.message }
         : { stage: "payload", reason: err instanceof Error ? err.message : String(err) };
     }
-    const receipt: MeterReceipt = {
+    const receipt: SpendReceipt = {
       schema: RECEIPT_SCHEMA_VERSION,
       id: call.id,
       ts: new Date(call.started).toISOString(),
