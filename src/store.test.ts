@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SqliteMeterStore } from "./store.js";
-import type { MeterReceipt } from "./receipt.js";
+import { SqliteSpendStore } from "./store.js";
+import type { SpendReceipt } from "./receipt.js";
 
-function receipt(overrides: Partial<MeterReceipt> = {}): MeterReceipt {
+function receipt(overrides: Partial<SpendReceipt> = {}): SpendReceipt {
   return {
     schema: 1,
     id: crypto.randomUUID(),
@@ -33,7 +33,7 @@ function receipt(overrides: Partial<MeterReceipt> = {}): MeterReceipt {
 }
 
 test("insert / list roundtrip preserves the receipt", async () => {
-  const store = new SqliteMeterStore(":memory:");
+  const store = new SqliteSpendStore(":memory:");
   const r = receipt();
   await store.insert(r);
   assert.deepEqual(store.list(), [r]);
@@ -41,7 +41,7 @@ test("insert / list roundtrip preserves the receipt", async () => {
 });
 
 test("label updates outcome in place, including inside the JSON", async () => {
-  const store = new SqliteMeterStore(":memory:");
+  const store = new SqliteSpendStore(":memory:");
   const r = receipt();
   await store.insert(r);
   await store.label(r.id, "used", "answered the question");
@@ -52,13 +52,13 @@ test("label updates outcome in place, including inside the JSON", async () => {
 });
 
 test("label throws on unknown id", async () => {
-  const store = new SqliteMeterStore(":memory:");
+  const store = new SqliteSpendStore(":memory:");
   await assert.rejects(() => store.label("nope", "used"), /no receipt with id/);
   store.close();
 });
 
 test("list({since}) filters on ts", async () => {
-  const store = new SqliteMeterStore(":memory:");
+  const store = new SqliteSpendStore(":memory:");
   const old = receipt({ ts: "2026-01-01T00:00:00.000Z" });
   const recent = receipt({ ts: "2026-09-01T00:00:00.000Z" });
   await store.insert(old);

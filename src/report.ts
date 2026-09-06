@@ -1,33 +1,54 @@
-/**
- * Report aggregation, pure functions over receipts so the numbers are testable
- * without a terminal. The CLI (`cli.ts`) does the parsing and printing.
- *
- * Spend is summed in atomic units (BigInt — amounts are strings on the wire)
- * and only formatted at the edge, with a configurable `decimals` (default 6,
- * USDC). The report says which power of ten it divided by.
- */
-import type { MeterReceipt } from "./receipt.js";
+/** Pure aggregation and text formatting for x402 spend reports. */
+import type { SpendReceipt } from "./receipt.js";
 
+/** Aggregated spend and latency statistics for one exact resource URL. */
 export interface EndpointStats {
+  /** Exact `resource.url` shared by receipts in this group, including its query string. */
   resourceUrl: string;
+  /** Number of receipts in the group. */
   calls: number;
+  /** Number of receipts whose settlement succeeded. */
   settledCalls: number;
   /** Atomic units actually settled (settled calls only; `upto` settles less than authorized). */
   spendAtomic: bigint;
-  /** Median settled cost across receipts labeled `used`. Undefined until something is labeled. */
+  /** Median effective cost of `used` receipts; unsettled receipts contribute zero. */
   medianCostPerUsedAtomic?: bigint;
+  /** Number of receipts labeled `used`, whether settled or not. */
   usedCalls: number;
+  /** Nearest-rank 50th percentile latency of final payment-bearing legs, in milliseconds. */
   p50PaidMs?: number;
+  /** Nearest-rank 95th percentile latency of final payment-bearing legs, in milliseconds. */
   p95PaidMs?: number;
 }
 
+/** Aggregated report data ready for text or programmatic presentation. */
 export interface Report {
+  /** Optional lower-bound timestamp displayed in formatted output. */
   since?: Date;
+  /** Per-URL statistics sorted by descending settled spend. */
   endpoints: EndpointStats[];
-  totals: { calls: number; settledCalls: number; spendAtomic: bigint };
+  /** Counts and settled spend across every endpoint in the report. */
+  totals: {
+    /** Total number of receipts. */
+    calls: number;
+    /** Total number of successfully settled receipts. */
+    settledCalls: number;
+    /** Total successfully settled amount in atomic units. */
+    spendAtomic: bigint;
+  };
 }
 
-/** "30m" | "24h" | "7d" | "2w" | ISO date → Date. */
+/**
+ * Parses a report time boundary from a duration or date string.
+ *
+ * Supported duration suffixes are minutes (`m`), hours (`h`), days (`d`), and
+ * weeks (`w`). Other inputs are delegated to `Date.parse`.
+ *
+ * @param input - Duration such as `30m`, `24h`, `7d`, or `2w`, or a parseable date.
+ * @param now - Reference time for duration subtraction; defaults to the current time.
+ * @returns The absolute lower-bound timestamp.
+ * @throws When `input` is neither a supported duration nor a parseable date.
+ */
 export function parseSince(input: string, now: Date = new Date()): Date {
   const m = /^(\d+)([mhdw])$/.exec(input.trim());
   if (m) {
@@ -39,32 +60,64 @@ export function parseSince(input: string, now: Date = new Date()): Date {
   return new Date(parsed);
 }
 
-function settledAmount(r: MeterReceipt): bigint {
-  if (!r.settled) return 0n;
-  return BigInt(r.amountSettled ?? r.amountAuthorized);
+/**
+ * Returns the effective settled amount for aggregation.
+ *
+ * @param receipt - Receipt to price.
+ * @returns Zero for unsettled calls; otherwise the settled or authorized atomic amount.
+ */
+function settledAmount(receipt: SpendReceipt): bigint {
+  if (!receipt.settled) return 0n;
+  return BigInt(receipt.amountSettled ?? receipt.amountAuthorized);
 }
 
-function paidMs(r: MeterReceipt): number | undefined {
-  for (let i = r.legs.length - 1; i >= 0; i--) {
-    const leg = r.legs[i];
+/**
+ * Finds latency for the payment-bearing leg that delivered the final result.
+ *
+ * @param receipt - Receipt whose legs should be inspected.
+ * @returns Recovery latency when present, paid latency otherwise, or `undefined`.
+ */
+function paidMs(receipt: SpendReceipt): number | undefined {
+  for (let i = receipt.legs.length - 1; i >= 0; i--) {
+    const leg = receipt.legs[i];
     if (leg.kind === "paid" || leg.kind === "recovery") return leg.ms;
   }
   return undefined;
 }
 
+/**
+ * Calculates the integer median of an ascending bigint collection.
+ *
+ * Even-sized collections use integer division and therefore round toward zero.
+ */
 function medianBigint(sorted: bigint[]): bigint | undefined {
   if (sorted.length === 0) return undefined;
   const mid = sorted.length >> 1;
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2n;
 }
 
+/** Returns the nearest-rank percentile from an ascending numeric collection. */
 function percentile(sorted: number[], p: number): number | undefined {
   if (sorted.length === 0) return undefined;
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))];
 }
 
-export function buildReport(receipts: MeterReceipt[], since?: Date): Report {
-  const byUrl = new Map<string, MeterReceipt[]>();
+/**
+ * Aggregates receipts into per-endpoint and overall spend statistics.
+ *
+ * Grouping uses the exact `resource.url`, including query strings. Amounts stay
+ * as `bigint` atomic units until presentation to avoid precision loss.
+ *
+ * This function does not filter by `since`; callers should provide an already
+ * filtered receipt collection. The timestamp is retained only for report
+ * metadata and display.
+ *
+ * @param receipts - Receipts to aggregate.
+ * @param since - Optional lower-bound metadata associated with `receipts`.
+ * @returns Deterministically ordered report data.
+ */
+export function buildReport(receipts: SpendReceipt[], since?: Date): Report {
+  const byUrl = new Map<string, SpendReceipt[]>();
   for (const r of receipts) {
     const list = byUrl.get(r.resource.url) ?? [];
     list.push(r);
@@ -100,7 +153,16 @@ export function buildReport(receipts: MeterReceipt[], since?: Date): Report {
   };
 }
 
-/** Atomic units → decimal string, e.g. formatAtomic(5001n, 6) → "0.005001". */
+/**
+ * Formats an integer atomic amount as a fixed-point decimal string.
+ *
+ * @param amount - Signed amount in atomic units.
+ * @param decimals - Non-negative number of asset decimal places.
+ * @returns Fixed-point value without locale-specific separators.
+ *
+ * @example
+ * formatAtomic(5001n, 6); // "0.005001"
+ */
 export function formatAtomic(amount: bigint, decimals: number): string {
   const negative = amount < 0n;
   const abs = (negative ? -amount : amount).toString().padStart(decimals + 1, "0");
@@ -109,8 +171,22 @@ export function formatAtomic(amount: bigint, decimals: number): string {
   return `${negative ? "-" : ""}${whole}${frac}`;
 }
 
-export function formatReport(report: Report, opts: { decimals?: number } = {}): string {
-  const decimals = opts.decimals ?? 6;
+/**
+ * Renders report data as an aligned plain-text table.
+ *
+ * @param report - Aggregated data produced by {@link buildReport}.
+ * @param options - Formatting options.
+ * @param options.decimals - Asset decimals used to display atomic amounts; defaults to `6`.
+ * @returns A complete report suitable for terminal output.
+ */
+export function formatReport(
+  report: Report,
+  options: {
+    /** Asset decimals used to display atomic amounts; defaults to `6`. */
+    decimals?: number;
+  } = {}
+): string {
+  const decimals = options.decimals ?? 6;
   const fmt = (amount: bigint) => formatAtomic(amount, decimals);
   const pct = (n: number, of: number) => (of === 0 ? "-" : `${Math.round((100 * n) / of)}%`);
   const ms = (e: EndpointStats) => (e.p50PaidMs === undefined ? "-" : `${e.p50PaidMs}/${e.p95PaidMs}`);
