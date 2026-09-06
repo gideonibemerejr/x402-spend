@@ -60,3 +60,7 @@ Spend by endpoint, settlement rate, median cost per **used** result, and p50/p95
 ## Privacy
 
 Local only. Receipts go to a SQLite file on your machine; nothing leaves it in v0.1.
+
+## Development roadmap
+
+See the [post-launch roadmap](docs/ROADMAP.md) for verified findings, incoming API changes, and the proposed order of reliability work and cleanup.
