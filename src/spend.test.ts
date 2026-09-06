@@ -20,7 +20,7 @@ import {
   decodePaymentSignatureHeader,
 } from "@x402/core/http";
 import type { PaymentRequired, PaymentRequirements, SchemeNetworkClient } from "@x402/core/types";
-import { createSpend, SpendPersistenceError, type SpendStore } from "./spend.js";
+import { createSpend, SpendPersistenceError, type SpendFetchInit, type SpendStore } from "./spend.js";
 import type { Outcome, SpendReceipt } from "./receipt.js";
 
 const NETWORK = "eip155:84532";
@@ -495,4 +495,60 @@ test("the deprecated positional fetch form still works for one release", async (
   await spend.fetch("https://api.test/paid");
   assert.equal(store.receipts.length, 1);
   assert.deepEqual(await spend.label(spend.last()!, "used"), { posted: false });
+});
+
+test("non-standard init fields survive the Request construction and reach every leg", async () => {
+  const store = new MemoryStore();
+  const seen: { paid: boolean; init: RequestInit | undefined }[] = [];
+  const transport = settledTransport();
+
+  const spend = createSpend(makeClient(), store, {
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      seen.push({ paid: request.headers.has("PAYMENT-SIGNATURE"), init });
+      return transport(request, init);
+    },
+  });
+
+  // `next` is Next.js's own extension to fetch init; a Request drops it.
+  await spend.fetch("https://api.test/paid", {
+    taskClass: "web-search",
+    next: { revalidate: 60 },
+  } as SpendFetchInit & { next: { revalidate: number } });
+
+  assert.equal(seen.length, 2, "one initial leg and one paid leg");
+  assert.deepEqual(seen.map((s) => s.paid), [false, true]);
+  for (const { paid, init } of seen) {
+    const leg = paid ? "paid" : "initial";
+    assert.deepEqual((init as { next?: unknown })?.next, { revalidate: 60 }, `next missing on the ${leg} leg`);
+    // taskClass is this package's own field and must not be forwarded as fetch init.
+    assert.equal(Object.hasOwn(init ?? {}, "taskClass"), false, `taskClass leaked on the ${leg} leg`);
+  }
+  assert.equal(store.receipts[0].taskClass, "web-search");
+});
+
+test("forwarded init cannot overwrite the payment headers the wrapper set", async () => {
+  const store = new MemoryStore();
+  const paidRequests: Request[] = [];
+  const transport = settledTransport();
+
+  const spend = createSpend(makeClient(), store, {
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.headers.has("PAYMENT-SIGNATURE")) paidRequests.push(request);
+      return transport(request, init);
+    },
+  });
+
+  // A caller passing headers and a body must not be able to strip the payment
+  // signature off the paid leg by having them replayed over it.
+  await spend.fetch("https://api.test/paid", {
+    method: "POST",
+    body: "hello",
+    headers: { "x-caller": "1" },
+  });
+
+  assert.equal(paidRequests.length, 1);
+  assert.ok(paidRequests[0].headers.get("PAYMENT-SIGNATURE"), "payment signature survived");
+  assert.equal(store.receipts[0].method, "POST");
 });

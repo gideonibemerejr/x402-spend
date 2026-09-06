@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1
+
+`createSpend` builds one `Request` per call, and constructing it dropped every init field the fetch
+spec does not define — including Next.js's `next: { revalidate, tags }`, so a meter used inside a
+route handler silently lost its caching and revalidation behaviour. Non-standard init fields are now
+forwarded to the transport on every leg. Only non-standard keys travel, so a caller's headers or body
+can never be replayed over the ones the payment wrapper set, and `taskClass` stays this package's own
+rather than leaking into fetch init. ([#4](https://github.com/gideonibemerejr/x402-spend/issues/4))
+
+0.3.0 was tagged but never published; 0.3.1 is the first release carrying the review support below.
+
 ## 0.3.0
 
 `createMeter` is now `createSpend` and `meter.ts` is `spend.ts`, with no alias: the value it returns

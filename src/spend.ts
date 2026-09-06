@@ -65,6 +65,37 @@ export class SpendPersistenceError extends Error {
   }
 }
 
+/**
+ * Init fields the `Request` constructor already carries, plus this package's own
+ * `taskClass`. Everything else a caller passed is framework territory and is
+ * forwarded to the transport untouched.
+ */
+const STANDARD_INIT_KEYS = new Set([
+  "method", "headers", "body", "mode", "credentials", "cache", "redirect",
+  "referrer", "referrerPolicy", "integrity", "keepalive", "signal", "window",
+  "duplex", "priority", "taskClass",
+]);
+
+/**
+ * Extracts the init fields a `Request` would silently drop.
+ *
+ * Frameworks extend `fetch` with their own options — Next.js reads
+ * `next: { revalidate, tags }` — and constructing a `Request` throws those away.
+ * Only the non-standard keys are forwarded, so a caller's init can never
+ * overwrite the headers or body the payment wrapper put on the request.
+ *
+ * @returns The extra fields, or `undefined` when the caller passed none, which
+ *   leaves the common path calling `fetchImpl` exactly as before.
+ */
+function initExtrasFrom(init?: SpendFetchInit): Record<string, unknown> | undefined {
+  if (!init) return undefined;
+  const extras: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(init)) {
+    if (!STANDARD_INIT_KEYS.has(key)) extras[key] = value;
+  }
+  return Object.keys(extras).length > 0 ? extras : undefined;
+}
+
 /** Explicit outcome also preserves falsy thrown values, including undefined. */
 type CallResult = { ok: true; response: Response } | { ok: false; error: unknown };
 
@@ -161,6 +192,8 @@ interface CallContext {
   legs: Leg[];
   /** Number of payment-bearing legs seen, used to distinguish recovery. */
   paidLegs: number;
+  /** Non-standard init fields the caller supplied, forwarded to every transport leg. */
+  initExtras?: Record<string, unknown>;
   /** Fields captured by `onBeforePaymentCreation`; absent for free calls and early refusals. */
   wire?: Wire;
   /**
@@ -303,7 +336,9 @@ export function createSpend(
         : "session";
     const t0 = performance.now();
     try {
-      const response = await fetchImpl(request);
+      const response = call.initExtras
+        ? await fetchImpl(request, call.initExtras as RequestInit)
+        : await fetchImpl(request);
       if (response.status === 402) {
         const header = response.headers.get("PAYMENT-REQUIRED");
         if (header) {
@@ -379,6 +414,7 @@ export function createSpend(
         started: Date.now(),
         method: request.method,
         taskClass: init?.taskClass,
+        initExtras: initExtrasFrom(init),
         legs: [],
         paidLegs: 0,
       };
