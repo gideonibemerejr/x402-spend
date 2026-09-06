@@ -25,18 +25,23 @@
     "build": "tsc -p .",
     "test": "npm run build && node --no-warnings --test \"dist/**/*.test.js\"",
     "report": "node --no-warnings dist/cli.js report",
-    "typecheck:examples": "tsc -p tsconfig.examples.json"
+    "typecheck:examples": "tsc -p tsconfig.examples.json",
+    "example:seller": "node --env-file=.env examples/seller-sepolia.ts",
+    "example:live": "npm run build && node --env-file=.env examples/live-sepolia.ts"
   },
   "peerDependencies": {
     "@x402/core": ">=2.0.0",
     "@x402/fetch": ">=2.0.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^22.20.1",
     "@x402/core": "^2.25.0",
     "@x402/evm": "^2.25.0",
+    "@x402/express": "^2.25.0",
     "@x402/extensions": "^2.25.0",
     "@x402/fetch": "^2.25.0",
+    "express": "^5.2.1",
     "typescript": "^5.6.0",
     "viem": "^2.56.3"
   }
