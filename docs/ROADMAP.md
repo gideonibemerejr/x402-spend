@@ -18,7 +18,7 @@ The merge also expanded API JSDoc and added a PR template. Current documentation
 - The caller's x402 client owns schemes, signers, and spend controls.
 - Keep `node:sqlite`, no native dependencies, and no new runtime dependencies.
 - Preserve per-call `AsyncLocalStorage` and the existing same-URL concurrency acceptance test.
-- Receipt field names are fixed. Any proposed schema change needs an explicit design and corresponding handoff update.
+- Preserve existing receipt field names. The session-access item now calls for a schema bump; design its compatibility behavior and update the handoff when implementing it.
 - Keep task classes as caller-supplied free text.
 
 ## Baseline
@@ -31,22 +31,19 @@ The merge also expanded API JSDoc and added a PR template. Current documentation
 - Focused, chain-free probes reproduced the six issues marked **reproduced** below. These were audit probes, not committed regression tests or production fixes.
 - No live payment, testnet dogfood run, or npm release was performed for this review.
 
-## Work sequence
+## Priority order — Gideon's review
 
-Each row is a small proposed PR. Start with regression tests for behavior changes; keep mechanical cleanup separate so reviews stay focused. S = a focused change; M = several related paths or a compatibility decision. These are scope estimates, not calendar promises.
+These five items take priority in the order below. The earlier work breakdown that follows remains supporting backlog; its section numbers do not indicate implementation priority.
 
-| Order | Work | Why it matters | Size / dependency |
-| --- | --- | --- | --- |
-| 1 | Finalize receipts once and preserve error context | Avoid duplicate writes and obscured payment errors | S; error API design |
-| 2 | Correct report amounts and asset boundaries | Make spend totals trustworthy | M; report API decision |
-| 3 | Verify transport and protocol edge cases | Ensure receipts describe what actually happened | M; split by path |
-| 4 | Harden CLI, SQLite roundtrips, and package checks | Make the installed tool dependable | S–M; can be separate PRs |
-| 4b | Establish the release workflow | Make each published version traceable and verified | M; before the next npm release |
-| 5 | Dogfood two real testnet endpoints | Validate usefulness before broader product work | Caller-funded signer; target before Sept 15 |
-| 6 | Consolidate internals and contributor documentation | Reduce duplication after semantics are tested | S; after behavior fixes |
-| 7 | Improve labeling and report workflows | Help callers answer “was it worth it?” | M; proposed API/product decisions |
+1. **Multi-asset reporting, before the dogfood post.** Group endpoint amounts and totals by `asset` + `network`, and resolve decimals per asset instead of applying one global `--decimals` value. The current report adds unrelated atomic units together. A single-asset dataset can hide that defect; reporting must remain meaningful when other assets appear.
+2. **Exclude unsettled receipts from cost statistics.** An unsettled receipt labeled `used` currently contributes zero and lowers the median. Exclude these receipts from cost samples and/or expose them as a separate count. This intentionally changes the current documented behavior; update that documentation with the implementation.
+3. **Record session access.** Capture resource access through the V2 `SIGN-IN-WITH-X` session flow even when no new payment occurs, using `amountSettled: "0"` and a `viaSession` flag. Plan a receipt schema bump and account for session use when reporting the value of the opening payment. Session detection and attribution are implementation details to resolve when this item is taken up.
+4. **Expose receipt IDs per call.** Add a `Spend.call()` variant returning `{ response, receiptId }`, so callers can label the corresponding receipt without racing on `last()`. Keep `Spend.fetch()` as the drop-in fetch interface. Define the no-receipt and error cases during API design.
+5. **Document the bytes limitation.** State in the README that bytes are taken only from `Content-Length`; responses without that header, including typical chunked responses, have no recorded byte count. Preserve the behavior of not consuming response bodies for measurement.
 
-Dogfood is the handoff's deadline item. It does not need to wait for every cleanup PR. Start its preparation alongside the early fixes; use a controlled single-asset dataset and land any defect that would invalidate its receipts or report before presenting the results.
+Release workflow remains a supporting task before the next npm release. Gideon is handling Changesets installation and configuration. The entries below retain earlier findings and proposals for later review.
+
+## Supporting backlog
 
 ## 1. Receipt finalization and error handling
 
@@ -54,7 +51,7 @@ Dogfood is the handoff's deadline item. It does not need to wait for every clean
 
 Proposed work:
 
-- x402-spend owns finalization: separate transport completion from persistence and attempt one insert per recordable outer call. Free calls remain unrecorded.
+- x402-spend owns finalization: separate transport completion from persistence and attempt one insert per recordable outer call. Ordinary free calls remain unrecorded; session access is covered by priority item 3.
 - Define storage-error behavior explicitly. Preserve the original payment/transport error and storage failure together when both occur. Do not silently swallow persistence failures or change the caller's payment policy.
 - Preserve the existing rule that `last()` updates only after a confirmed insert.
 - Proposed error contract from roadmap review: expose the finalized `SpendReceipt`, persistence error, and original request/payment error when present. When a response was obtained before storage failed, make that distinction inspectable; do not describe a storage failure as payment failure or encourage retrying the paid request. Choose the exact public error shape before implementation.
@@ -75,7 +72,7 @@ Proposed work:
 - Group monetary results by network and asset as well as endpoint; show totals per denomination. Do not rank different assets by raw atomic amount or imply a currency conversion.
 - Until a multi-asset report API is settled, an explicit mixed-denomination error is a possible smaller first fix.
 - Validate atomic amount strings at the reporting boundary. Keep valid rows reportable and visibly count/explain invalid monetary data; never silently convert malformed amounts into zero spend.
-- Preserve and add coverage for the now-documented metric contract: `medianCostPerUsedAtomic` is median effective cost across all `used` receipts, with unsettled receipts contributing zero. Excluding those samples would be a separate product decision, not a correction to the current documentation.
+- Apply priority item 2: exclude unsettled receipts from cost statistics or expose them separately, replacing the current documented zero-cost behavior. Update the metric documentation and regression coverage together.
 - Preserve and add coverage for the now-documented `buildReport(receipts, since)` contract: callers supply filtered receipts; `since` is metadata for display. Filtering stays in `SqliteSpendStore.list` for the CLI.
 
 Acceptance: distinct denominations cannot produce an unlabeled combined spend total; malformed data is visible without losing valid results; actual settled amounts still take precedence over authorized amounts; all-unlabeled, empty, unsettled-used, and very large atomic amounts are covered.
@@ -91,7 +88,7 @@ Carry forward these **investigation candidates** from the local handoff. Trace t
 - POST body and headers survive the initial, paid, and recovery legs; Request/init overrides agree with receipt metadata.
 - Paid-leg verify failure, settlement failure, payload failure, rejected fetch, and abort signals produce accurate status and failure stages.
 - Recovery yields `[initial, paid, recovery]` and the final settlement. Include recovery followed by transport failure so stale settlement state cannot misdescribe the last attempt.
-- Session headers create a session leg; an unpaid session resolution creates no paid receipt. First establish how the public factory can accept/configure the SDK HTTP client that owns these hooks; do not test an unreachable setup.
+- Apply priority item 3: session access currently goes unrecorded; add observation and a schema version that can represent it. Establish how the public factory exposes the SDK session path and test that path.
 - Missing, garbled, or structurally invalid 402 headers have deliberate behavior and preserve the SDK's error. Header decoding is not structural validation.
 - **SDK source verified, end-to-end not yet tested:** v1 settlement processing returns before response hooks. Document v2 support and design an explicit unsupported-version diagnostic or correct observation of v1. Do not introduce payment refusal casually: the handoff's “record-or-refuse” candidate must be reconciled with the observer-only rule.
 - Refused offers currently select the smallest raw atomic amount, even across different assets, and store it as `amountAuthorized`. Preserve the existing acceptance test until a decision is made; document that this is a representative offer, not actual authorization or a cross-currency price comparison.
@@ -171,4 +168,4 @@ Bazaar discovery, a public price-comparison page, and a work-unit extension rema
 
 ## Recommended first implementation
 
-Start with **one-time receipt finalization and error preservation** after reviewing its proposed error contract. It is small, has a reproduced failure, affects every paid call when storage fails, and can be fixed without changing the receipt schema. Follow with denomination-safe reporting, then the focused transport regressions and dogfood run.
+Start with **multi-asset reporting and per-asset decimals**, before the dogfood post. Continue through Gideon’s five priorities in order; retain receipt finalization, release workflow, and the other findings as supporting work.
