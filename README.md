@@ -154,6 +154,15 @@ Local only by default. Receipts go to a SQLite file on your machine and nothing 
 configure `review`, which is opt-in per `createSpend` call. When you do, only the review fields listed
 above are sent — never the receipt — and a published review is public and includes the payer address.
 
-## Development roadmap
+## [Roadmap](https://github.com/gideonibemerejr/x402-spend/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap)
 
-See the [post-launch roadmap](docs/ROADMAP.md) for verified findings, current API contracts, and the proposed order of reliability work and cleanup.
+1. Retry inference: a second paid call to the same endpoint or task class within a window labels the first `retried` without a `label()` call.
+2. Receipt id returned from the call (`spend.call()` → `{ response, id }`), so concurrent callers don't depend on `last()`.
+3. Session access recorded: calls served under a wallet session with no payment, `amountSettled: "0"`, so cost per used result is honest across a session.
+4. Tool-call wrapper for MCP clients, then Vercel AI SDK, so the label is set by the loop, not by the developer.
+5. Opt-in self-grade: one model call at the end of a run to distinguish `used` from `discarded`.
+6. A work-unit Extension proposal to the x402 Foundation, written from real receipts.
+
+Not planned: routing, spend enforcement, or anything seller-side.
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for verified findings, current API contracts, and the order of reliability work and cleanup.
