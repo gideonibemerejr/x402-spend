@@ -1,5 +1,5 @@
 /** Publishing a labeled receipt as a review, verified against its settlement. */
-import type { Outcome, SpendReceipt } from "./receipt.js";
+import type { Outcome, OutcomeReason, OutcomeRecovery, SpendReceipt } from "./receipt.js";
 
 /** Outcomes that can be published. `unlabeled` is absent: it is not a verdict. */
 export type ReviewOutcome = Exclude<Outcome, "unlabeled">;
@@ -25,9 +25,22 @@ export interface ReviewSubmission {
   transaction: string;
   payer: string;
   outcome: ReviewOutcome;
+  /** Required when the outcome is `not_useful`, absent when it is `useful`. */
+  reason?: OutcomeReason;
+  recovery?: OutcomeRecovery;
   note?: string;
   paidMs?: number;
   ts: string;
+}
+
+/** Everything a label carries besides the outcome itself. */
+export interface LabelDetail {
+  /** Why the response was not useful. Required on `not_useful`, refused on `useful`. */
+  reason?: OutcomeReason;
+  /** What the caller did next. Optional everywhere. */
+  recovery?: OutcomeRecovery;
+  /** Free text alongside the code, so specifics survive without widening the closed set. */
+  note?: string;
 }
 
 /** Where and how to publish reviews. Off unless configured. */
@@ -91,7 +104,7 @@ function publicUrl(url: string): string {
 export function buildSubmission(
   receipt: SpendReceipt,
   outcome: ReviewOutcome,
-  note?: string
+  verdict: LabelDetail = {}
 ): ReviewSubmission | undefined {
   if (!receipt.transaction || !receipt.payer) return undefined;
   const amount = receipt.amountSettled ?? receipt.amountAuthorized;
@@ -106,7 +119,9 @@ export function buildSubmission(
     transaction: receipt.transaction,
     payer: receipt.payer,
     outcome,
-    ...(note !== undefined ? { note } : {}),
+    ...(verdict.reason !== undefined ? { reason: verdict.reason } : {}),
+    ...(verdict.recovery !== undefined ? { recovery: verdict.recovery } : {}),
+    ...(verdict.note !== undefined ? { note: verdict.note } : {}),
     ...(paidMs(receipt) !== undefined ? { paidMs: paidMs(receipt) } : {}),
     ts: receipt.ts,
   };

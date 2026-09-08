@@ -13,6 +13,15 @@ export interface DenominationStats extends Denomination {
   settledCalls: number;
   /** Sum of valid settled amounts only; partial when invalidAmountCalls is nonzero. */
   spendAtomic: bigint;
+  /**
+   * Spend on calls that were not useful. Waste, regardless of how the caller
+   * recovered: retrying and going elsewhere both cost money and both follow the
+   * same failure.
+   */
+  wasteAtomic: bigint;
+  /** Calls labeled `useful`. Unlabeled calls count as neither. */
+  usefulCalls: number;
+  notUsefulCalls: number;
   /** Settled receipts excluded from monetary statistics because their amount is invalid. */
   invalidAmountCalls: number;
 }
@@ -20,14 +29,12 @@ export interface DenominationStats extends Denomination {
 /** Statistics for one exact resource URL and denomination. */
 export interface EndpointStats extends DenominationStats {
   resourceUrl: string;
-  /** Median price of settled `used` samples; unsettled calls are unpriced, not zero. */
-  medianCostPerUsedAtomic?: bigint;
-  /** All receipts labeled used, including ones with invalid amounts. */
-  usedCalls: number;
-  /** Used calls that carry a valid settled price and back the median. */
+  /** Median price of settled `useful` samples; unsettled calls are unpriced, not zero. */
+  medianCostPerUsefulAtomic?: bigint;
+  /** Useful calls that carry a valid settled price and back the median. */
   costSamples: number;
-  /** Used calls that never settled; unpriced, so they are kept out of the median. */
-  unsettledUsedCalls: number;
+  /** Useful calls that never settled; unpriced, so they are kept out of the median. */
+  unsettledUsefulCalls: number;
   p50PaidMs?: number;
   p95PaidMs?: number;
 }
@@ -107,8 +114,8 @@ export function buildReport(receipts: SpendReceipt[], since?: Date): Report {
   }
   const endpoints: EndpointStats[] = [...groups.values()].map((rs) => {
     const amounts = rs.map(settledAmount);
-    const usedCosts = amounts.filter((amount, i): amount is bigint =>
-      rs[i].outcome === "used" && rs[i].settled && amount !== undefined
+    const usefulCosts = amounts.filter((amount, i): amount is bigint =>
+      rs[i].outcome === "useful" && rs[i].settled && amount !== undefined
     ).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
     const paid = rs.map(paidMs).filter((ms): ms is number => ms !== undefined).sort((a, b) => a - b);
     return {
@@ -118,11 +125,14 @@ export function buildReport(receipts: SpendReceipt[], since?: Date): Report {
       calls: rs.length,
       settledCalls: rs.filter((r) => r.settled).length,
       spendAtomic: amounts.reduce<bigint>((sum, amount) => sum + (amount ?? 0n), 0n),
+      wasteAtomic: amounts.reduce<bigint>(
+        (sum, amount, i) => sum + (rs[i].outcome === "not_useful" ? (amount ?? 0n) : 0n), 0n),
+      usefulCalls: rs.filter((r) => r.outcome === "useful").length,
+      notUsefulCalls: rs.filter((r) => r.outcome === "not_useful").length,
       invalidAmountCalls: amounts.filter((amount) => amount === undefined).length,
-      medianCostPerUsedAtomic: medianBigint(usedCosts),
-      usedCalls: rs.filter((r) => r.outcome === "used").length,
-      costSamples: usedCosts.length,
-      unsettledUsedCalls: rs.filter((r) => r.outcome === "used" && !r.settled).length,
+      medianCostPerUsefulAtomic: medianBigint(usefulCosts),
+      costSamples: usefulCosts.length,
+      unsettledUsefulCalls: rs.filter((r) => r.outcome === "useful" && !r.settled).length,
       p50PaidMs: percentile(paid, 50),
       p95PaidMs: percentile(paid, 95),
     };
@@ -135,11 +145,15 @@ export function buildReport(receipts: SpendReceipt[], since?: Date): Report {
   for (const e of endpoints) {
     const key = denominationKey(e);
     const total = denominations.get(key) ?? {
-      network: e.network, asset: e.asset, calls: 0, settledCalls: 0, spendAtomic: 0n, invalidAmountCalls: 0,
+      network: e.network, asset: e.asset, calls: 0, settledCalls: 0, spendAtomic: 0n,
+      wasteAtomic: 0n, usefulCalls: 0, notUsefulCalls: 0, invalidAmountCalls: 0,
     };
     total.calls += e.calls;
     total.settledCalls += e.settledCalls;
     total.spendAtomic += e.spendAtomic;
+    total.wasteAtomic += e.wasteAtomic;
+    total.usefulCalls += e.usefulCalls;
+    total.notUsefulCalls += e.notUsefulCalls;
     total.invalidAmountCalls += e.invalidAmountCalls;
     denominations.set(key, total);
   }
@@ -204,14 +218,23 @@ export function formatReport(
     const endpoints = report.endpoints.filter((e) => e.network === d.network && e.asset === d.asset);
     const rows = endpoints.map((e) => [
       e.resourceUrl, String(e.calls), pct(e.settledCalls, e.calls), fmt(e.spendAtomic),
-      `${e.medianCostPerUsedAtomic === undefined ? "-" : fmt(e.medianCostPerUsedAtomic)} (${e.costSamples === e.usedCalls ? `${e.usedCalls} used` : `${e.costSamples}/${e.usedCalls} used samples`})`,
+      `${e.medianCostPerUsefulAtomic === undefined ? "-" : fmt(e.medianCostPerUsefulAtomic)} (${e.costSamples === e.usefulCalls ? `${e.usefulCalls} useful` : `${e.costSamples}/${e.usefulCalls} useful samples`})`,
       e.p50PaidMs === undefined ? "-" : `${e.p50PaidMs}/${e.p95PaidMs}`,
     ]);
     rows.push(["TOTAL", String(d.calls), pct(d.settledCalls, d.calls), fmt(d.spendAtomic), "", ""]);
-    const header = ["ENDPOINT", "CALLS", "SETTLED", "SPEND", "MED COST/USED", "P50/P95 PAID MS"];
+    const header = ["ENDPOINT", "CALLS", "SETTLED", "SPEND", "MED COST/USEFUL", "P50/P95 PAID MS"];
     const widths = header.map((h, i) => rows.reduce((width, row) => Math.max(width, row[i].length), h.length));
     const line = (cells: string[]) => cells.map((c, i) => i === 0 ? c.padEnd(widths[i]) : c.padStart(widths[i])).join("  ").trimEnd();
+    // Waste and cost per useful result lead; raw spend is the second question.
+    // What a run cost is spend divided by the results that were worth having,
+    // and everything spent reaching a not-useful answer counts against it.
+    const costPerUseful = d.usefulCalls === 0 ? undefined : d.spendAtomic / BigInt(d.usefulCalls);
     output.push("", `${d.network} · ${d.asset} · amounts are atomic units${decimals === undefined ? " (decimals unknown)" : ` ÷ 10^${decimals}`}`);
+    output.push(
+      `${d.usefulCalls} useful · ${d.notUsefulCalls} not useful · ` +
+      `waste ${fmt(d.wasteAtomic)} · ` +
+      `cost per useful result ${costPerUseful === undefined ? "-" : fmt(costPerUseful)}`
+    );
     if (d.invalidAmountCalls) {
       output.push(`WARNING: ${d.invalidAmountCalls} settled receipt(s) with invalid amounts excluded from monetary statistics; spend is partial.`);
     }

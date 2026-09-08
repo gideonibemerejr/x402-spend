@@ -1,6 +1,6 @@
 {
   "name": "x402-spend",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "A bank statement for your agent's x402 spend, with the column the bank can't fill in: was it worth it.",
   "type": "module",
   "license": "MIT",

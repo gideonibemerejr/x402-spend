@@ -1,6 +1,7 @@
 /** SQLite persistence for x402 spend receipts. */
 import { DatabaseSync } from "node:sqlite";
-import type { Outcome, SpendReceipt } from "./receipt.js";
+import type { LabelDetail } from "./review.js";
+import { RECEIPT_SCHEMA_VERSION, type Outcome, type SpendReceipt } from "./receipt.js";
 import type { SpendStore } from "./spend.js";
 
 /** Default database path used by {@link SqliteSpendStore} and the report CLI. */
@@ -14,6 +15,8 @@ CREATE TABLE IF NOT EXISTS receipts (
   resource_url      TEXT NOT NULL,
   network           TEXT NOT NULL,
   outcome           TEXT NOT NULL,
+  outcome_reason    TEXT,
+  outcome_recovery  TEXT,
   outcome_note      TEXT,
   task_class        TEXT,
   settled           INTEGER NOT NULL,
@@ -31,6 +34,44 @@ CREATE INDEX IF NOT EXISTS idx_receipts_ts           ON receipts (ts);
 CREATE INDEX IF NOT EXISTS idx_receipts_outcome      ON receipts (outcome);
 CREATE INDEX IF NOT EXISTS idx_receipts_task_class   ON receipts (task_class);
 `;
+
+/**
+ * Brings a database written by an older version up to the current schema.
+ *
+ * `CREATE TABLE IF NOT EXISTS` cannot add a column to a table that already
+ * exists, so the two outcome columns are added here when absent, and the four
+ * old labels are mapped onto the binary model in the same pass.
+ *
+ * The mapping is deliberately lossy in one direction only. `discarded` recorded
+ * that a response was unusable but never which way, and choosing between
+ * `wrong`, `empty` and `malformed` on its behalf would invent the very
+ * distinction the reason codes exist to preserve — so those rows keep a null
+ * reason, and a null reason on an old row means "never collected", not "none".
+ */
+function migrate(db: DatabaseSync): void {
+  const columns = new Set(
+    (db.prepare(`PRAGMA table_info(receipts)`).all() as { name: string }[]).map((c) => c.name)
+  );
+  if (!columns.has("outcome_reason")) db.exec(`ALTER TABLE receipts ADD COLUMN outcome_reason TEXT`);
+  if (!columns.has("outcome_recovery")) db.exec(`ALTER TABLE receipts ADD COLUMN outcome_recovery TEXT`);
+
+  db.exec(`
+    UPDATE receipts SET outcome = 'useful',
+      json = json_set(json, '$.outcome', 'useful', '$.schema', ${RECEIPT_SCHEMA_VERSION})
+      WHERE outcome = 'used';
+    UPDATE receipts SET outcome = 'not_useful', outcome_recovery = 'retried_same',
+      json = json_set(json, '$.outcome', 'not_useful', '$.outcomeRecovery', 'retried_same',
+                      '$.schema', ${RECEIPT_SCHEMA_VERSION})
+      WHERE outcome = 'retried';
+    UPDATE receipts SET outcome = 'not_useful',
+      json = json_set(json, '$.outcome', 'not_useful', '$.schema', ${RECEIPT_SCHEMA_VERSION})
+      WHERE outcome = 'discarded';
+    UPDATE receipts SET outcome = 'not_useful', outcome_reason = 'no_response',
+      json = json_set(json, '$.outcome', 'not_useful', '$.outcomeReason', 'no_response',
+                      '$.schema', ${RECEIPT_SCHEMA_VERSION})
+      WHERE outcome = 'failed';
+  `);
+}
 
 /**
  * Finds the latency of the final payment-bearing leg.
@@ -68,6 +109,7 @@ export class SqliteSpendStore implements SpendStore {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec(SCHEMA);
+    migrate(this.db);
   }
 
   /**
@@ -130,18 +172,32 @@ export class SqliteSpendStore implements SpendStore {
     return row ? (JSON.parse(row.json) as SpendReceipt) : undefined;
   }
 
-  async label(id: string, outcome: Outcome, note?: string): Promise<void> {
+  async label(id: string, outcome: Outcome, verdict: LabelDetail = {}): Promise<void> {
+    // json_set writes a SQL NULL as JSON null rather than removing the key, so
+    // each optional field is cleared explicitly first and then set when present.
     const changed = this.db
       .prepare(
         `UPDATE receipts
-         SET outcome = ?, outcome_note = ?,
-             json = CASE WHEN ? IS NULL
-               THEN json_remove(json_set(json, '$.outcome', ?), '$.outcomeNote')
-               ELSE json_set(json, '$.outcome', ?, '$.outcomeNote', ?) END
+         SET outcome = ?, outcome_reason = ?, outcome_recovery = ?, outcome_note = ?,
+             json = json_set(
+               json_remove(json, '$.outcomeReason', '$.outcomeRecovery', '$.outcomeNote'),
+               '$.outcome', ?)
          WHERE id = ?`
       )
-      .run(outcome, note ?? null, note ?? null, outcome, outcome, note ?? null, id).changes;
+      .run(
+        outcome, verdict.reason ?? null, verdict.recovery ?? null, verdict.note ?? null,
+        outcome, id
+      ).changes;
     if (changed === 0) throw new Error(`x402-spend: no receipt with id ${id}`);
+    for (const [key, value] of [
+      ["$.outcomeReason", verdict.reason],
+      ["$.outcomeRecovery", verdict.recovery],
+      ["$.outcomeNote", verdict.note],
+    ] as const) {
+      if (value === undefined) continue;
+      this.db.prepare(`UPDATE receipts SET json = json_set(json, ?, ?) WHERE id = ?`)
+        .run(key, value, id);
+    }
   }
 
   /**

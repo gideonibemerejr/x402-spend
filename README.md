@@ -28,11 +28,27 @@ const res = await spend.fetch("https://api.example.com/search?q=x402", { taskCla
 The receipt starts `unlabeled`. Only the caller knows whether the thing it paid for actually worked, so say so:
 
 ```ts
-await spend.label(spend.last()!, "used");          // it answered the question
-await spend.label(id, "discarded", "stale data");  // paid, but worthless
+await spend.label(spend.last()!, "useful");                          // it answered the question
+await spend.label(id, "not_useful", { reason: "stale" });            // paid, but worthless
+await spend.label(id, "not_useful", {
+  reason: "wrong", recovery: "went_elsewhere", note: "wrong city",
+});
 ```
 
-Outcomes: `used` · `retried` · `discarded` · `failed` · `unlabeled`.
+**Two outcomes, not four**: `useful` · `not_useful`. The response either gave you what you were
+after or it did not. Whether you then retried, went elsewhere or gave up is *recovery* from that
+failure, on its own axis, because retrying and discarding both cost money and both follow the same
+failure. `unlabeled` is the state before a judgment, kept distinct so an unjudged call is never
+counted as a judgment either way.
+
+`reason` is required on `not_useful` and refused on `useful` — "it worked" is not a finding about
+anything. One of `no_response` · `empty` · `malformed` · `wrong` · `stale` · `insufficient`: a closed
+set, so reasons aggregate across calls instead of each describing one. `wrong`, `empty` and
+`malformed` stay apart deliberately, because the difference between an endpoint that is broken and
+one that is lying is a different fact about a seller.
+
+`recovery` is optional everywhere and never an outcome: `none` · `retried_same` · `went_elsewhere` ·
+`abandoned`. `note` is free text alongside the code, so specifics survive without widening the set.
 
 ## Publishing reviews
 
@@ -45,7 +61,7 @@ const spend = createSpend(client, new SqliteSpendStore(), {
   review: { endpoint: "https://x402-spend-reviews.g-764.workers.dev/v1/reviews" },
 });
 
-const result = await spend.label(id, "used", "clean answer");
+const result = await spend.label(id, "useful", { note: "clean answer" });
 // { posted: true, status: "verified" }
 ```
 
@@ -92,13 +108,20 @@ x402-spend report — since 2026-08-30T11:49:33.549Z · 14 calls · 14 settled
 
 eip155:84532 · 0x036CbD53842c5426634e7929541eC2318f3dCF7e · amounts are atomic units ÷ 10^6
 
-ENDPOINT                        CALLS  SETTLED     SPEND      MED COST/USED  P50/P95 PAID MS
-http://localhost:50643/search       9     100%  0.108000  0.012000 (6 used)          238/295
-http://localhost:50643/geocode      5     100%  0.012500  0.002500 (4 used)            49/64
+10 useful · 4 not useful · waste 0.036000 · cost per useful result 0.012050
+
+ENDPOINT                        CALLS  SETTLED     SPEND    MED COST/USEFUL  P50/P95 PAID MS
+http://localhost:50643/search       9     100%  0.108000  0.012000 (6 useful)        238/295
+http://localhost:50643/geocode      5     100%  0.012500  0.002500 (4 useful)          49/64
 TOTAL                              14     100%  0.120500
 ```
 
-The sample above is from a fake server, not a live payment run. Reports show spend by endpoint, settlement rate, median cost per **used** result, and p50/p95 paid-leg latency. Each asset/network has its own table and monetary total. Amounts use actual settlement when supplied (which can be less than authorization under `upto`). Invalid settled amounts are excluded from monetary statistics with a visible warning and count; totals in that group are marked partial.
+The sample above is from a fake server, not a live payment run.
+
+**Waste and cost per useful result lead**; raw spend is the second question. Cost per useful result
+is total spend ÷ the count of `useful` — everything spent reaching a `not_useful` answer counts
+against the results that were worth having, regardless of how you recovered. Reports then show spend
+by endpoint, settlement rate, median cost per **useful** result, and p50/p95 paid-leg latency. Each asset/network has its own table and monetary total. Amounts use actual settlement when supplied (which can be less than authorization under `upto`). Invalid settled amounts are excluded from monetary statistics with a visible warning and count; totals in that group are marked partial.
 
 The default is **atomic units**. `--decimals 6` is a convenience for a report containing only one denomination. For multiple assets, specify each scale explicitly; unspecified assets stay atomic:
 
@@ -109,7 +132,7 @@ x402-spend report --since 7d \
 
 Repeat `--asset-decimals network/asset=decimals` as needed. Matching uses exact recorded network and asset identifiers. Use `--db` for a non-default database path. No token metadata or prices are fetched automatically.
 
-The median still includes unsettled receipts labeled `used` as zero-cost samples; changing that metric is a separate roadmap decision. Invalid monetary samples are excluded and their sample count is shown.
+Unsettled receipts labeled `useful` are unpriced rather than counted as zero-cost samples, and are reported separately. Invalid monetary samples are excluded and their sample count is shown.
 
 ### Programmatic report compatibility
 
@@ -161,11 +184,11 @@ above are sent — never the receipt — and a published review is public and in
 
 ## [Roadmap](https://github.com/gideonibemerejr/x402-spend/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap)
 
-1. Retry inference: a second paid call to the same endpoint or task class within a window labels the first `retried` without a `label()` call.
+1. Recovery inference: a second paid call to the same endpoint or task class within a window records `recovery: retried_same` on the first without a `label()` call.
 2. Receipt id returned from the call (`spend.call()` → `{ response, id }`), so concurrent callers don't depend on `last()`.
 3. Session access recorded: calls served under a wallet session with no payment, `amountSettled: "0"`, so cost per used result is honest across a session.
 4. Tool-call wrapper for MCP clients, then Vercel AI SDK, so the label is set by the loop, not by the developer.
-5. Opt-in self-grade: one model call at the end of a run to distinguish `used` from `discarded`.
+5. Opt-in self-grade: one model call at the end of a run to propose an outcome and reason. Validated against hand labels, with its agreement rate published alongside anything it computes; a labeler checked against itself proves nothing.
 6. A work-unit Extension proposal to the x402 Foundation, written from real receipts.
 
 Not planned: routing, spend enforcement, or anything seller-side.

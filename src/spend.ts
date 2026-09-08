@@ -6,7 +6,10 @@ import { decodePaymentRequiredHeader } from "@x402/core/http";
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { wrapFetchWithPayment } from "@x402/fetch";
 import { RECEIPT_SCHEMA_VERSION, type Leg, type Outcome, type SpendReceipt } from "./receipt.js";
-import { buildSubmission, postReview, type LabelResult, type ReviewOptions } from "./review.js";
+import {
+  buildSubmission, postReview,
+  type LabelDetail, type LabelResult, type ReviewOptions,
+} from "./review.js";
 
 /**
  * Persistence contract required by {@link createSpend}.
@@ -31,7 +34,7 @@ export interface SpendStore {
    * @returns A promise that resolves after the update is durable.
    * @throws When no receipt exists for `id`, or when persistence fails.
    */
-  label(id: string, outcome: Outcome, note?: string): Promise<void>;
+  label(id: string, outcome: Outcome, verdict?: LabelDetail): Promise<void>;
   /**
    * Reads back a stored receipt.
    *
@@ -146,11 +149,11 @@ export interface Spend {
    * undoes the local label.
    *
    * @param id - Receipt UUID to update.
-   * @param outcome - Whether the paid result was used, retried, discarded, or failed.
-   * @param note - Optional explanation for the outcome.
+   * @param outcome - Whether the paid result was useful or not.
+   * @param verdict - Reason (required when not useful), recovery, and free-text note.
    * @returns Whether a review was published, and why not when it was not.
    */
-  label(id: string, outcome: Outcome, note?: string): Promise<LabelResult>;
+  label(id: string, outcome: Outcome, verdict?: LabelDetail): Promise<LabelResult>;
   /**
    * Returns the ID of the receipt most recently finalized by this spend.
    *
@@ -428,16 +431,24 @@ export function createSpend(
       if (!result.ok) throw result.error;
       return result.response;
     },
-    async label(id, outcome, note) {
+    async label(id, outcome, verdict = {}) {
       // The local write happens first and always; publishing is best effort.
-      await store.label(id, outcome, note);
+      await store.label(id, outcome, verdict);
       if (!review) return { posted: false };
       if (outcome === "unlabeled") {
         return { posted: false, error: "unlabeled is not a publishable verdict" };
       }
+      // Checked here rather than discovered as a 422: a doomed round trip
+      // teaches the caller nothing the local rule cannot.
+      if (outcome === "not_useful" && verdict.reason === undefined) {
+        return { posted: false, error: "not_useful requires a reason" };
+      }
+      if (outcome === "useful" && verdict.reason !== undefined) {
+        return { posted: false, error: "useful takes no reason" };
+      }
       const receipt = await store.get(id);
       if (!receipt) return { posted: false, error: `no receipt with id ${id}` };
-      const submission = buildSubmission(receipt, outcome, note);
+      const submission = buildSubmission(receipt, outcome, verdict);
       if (!submission) return { posted: false, error: "no settlement to verify" };
       return postReview(submission, review, fetchImpl);
     },

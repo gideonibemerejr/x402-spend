@@ -22,6 +22,7 @@ import {
 import type { PaymentRequired, PaymentRequirements, SchemeNetworkClient } from "@x402/core/types";
 import { createSpend, SpendPersistenceError, type SpendFetchInit, type SpendStore } from "./spend.js";
 import type { Outcome, SpendReceipt } from "./receipt.js";
+import type { LabelDetail } from "./review.js";
 
 const NETWORK = "eip155:84532";
 const ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"; // testnet USDC
@@ -36,11 +37,13 @@ class MemoryStore implements SpendStore {
   async insert(r: SpendReceipt) {
     this.receipts.push(r);
   }
-  async label(id: string, outcome: Outcome, note?: string) {
+  async label(id: string, outcome: Outcome, verdict: LabelDetail = {}) {
     const receipt = this.receipts.find((r) => r.id === id);
     if (!receipt) return;
     receipt.outcome = outcome;
-    if (note !== undefined) receipt.outcomeNote = note;
+    if (verdict.reason !== undefined) receipt.outcomeReason = verdict.reason;
+    if (verdict.recovery !== undefined) receipt.outcomeRecovery = verdict.recovery;
+    if (verdict.note !== undefined) receipt.outcomeNote = verdict.note;
   }
   async get(id: string) {
     return this.receipts.find((r) => r.id === id);
@@ -134,7 +137,7 @@ test("two concurrent paid calls to the same URL produce two correct, distinct re
       // belong to the same call — the URL-keyed pending map got these crossed.
       const r = store.receipts.find((r) => r.transaction === `0xtx-${nonce}`);
       assert.ok(r, `missing receipt for nonce ${nonce}`);
-      assert.equal(r.schema, 1);
+      assert.equal(r.schema, 2);
       assert.equal(r.method, "GET");
       assert.equal(r.resource.url, resource);
       assert.equal(r.resource.serviceName, "fake-paid-api");
@@ -201,16 +204,18 @@ test("smoke: spend → sqlite store → label(last()) → report", async () => {
 
     await spend.fetch(`${url}/paid`, { taskClass: "web-search" });
     assert.ok(spend.last());
-    await spend.label(spend.last()!, "used", "worth it");
+    await spend.label(spend.last()!, "useful", { note: "worth it" });
 
     const [r] = store.list();
     assert.equal(r.id, spend.last());
-    assert.equal(r.outcome, "used");
+    assert.equal(r.outcome, "useful");
     assert.equal(r.outcomeNote, "worth it");
     assert.equal(r.taskClass, "web-search");
 
     const out = formatReport(buildReport(store.list()), { decimals: 6 });
-    assert.match(out, /0\.005001 \(1 used\)/); // nonce 1 settles 5001 atomic units
+    assert.match(out, /0\.005001 \(1 useful\)/); // nonce 1 settles 5001 atomic units
+    // Waste and cost per useful result lead; raw spend is the second question.
+    assert.match(out, /1 useful · 0 not useful · waste 0\.000000 · cost per useful result 0\.005001/);
     store.close();
   } finally {
     server.close();
@@ -388,9 +393,9 @@ test("review posting is off unless configured, and never blocks the local label"
   const spend = createSpend(makeClient(), store, { fetchImpl: settledTransport() });
   await spend.fetch("https://api.test/paid");
 
-  const result = await spend.label(spend.last()!, "used", "worth it");
+  const result = await spend.label(spend.last()!, "useful", { note: "worth it" });
   assert.deepEqual(result, { posted: false });
-  assert.equal(store.receipts[0].outcome, "used");
+  assert.equal(store.receipts[0].outcome, "useful");
   assert.equal(store.receipts[0].outcomeNote, "worth it");
 });
 
@@ -407,7 +412,7 @@ test("a configured review endpoint receives exactly one post carrying no receipt
     review: { endpoint: "https://reviews.test/v1/reviews", fetchImpl: reviewFetch },
   });
   await spend.fetch("https://api.test/paid?key=secret#frag", { taskClass: "web-search" });
-  const result = await spend.label(spend.last()!, "used", "worth it");
+  const result = await spend.label(spend.last()!, "useful", { note: "worth it" });
 
   assert.deepEqual(result, { posted: true, status: "verified" });
   assert.equal(posts.length, 1);
@@ -417,7 +422,7 @@ test("a configured review endpoint receives exactly one post carrying no receipt
   // Query string and fragment carry credentials often enough that publishing
   // one unedited would leak a key.
   assert.equal(body.resourceUrl, "https://api.test/paid");
-  assert.equal(body.outcome, "used");
+  assert.equal(body.outcome, "useful");
   assert.equal(body.note, "worth it");
   assert.equal(body.taskClass, "web-search");
   assert.equal(body.schema, 1);
@@ -439,7 +444,7 @@ test("201, 200 and 202 all count as posted, and 202 reports the review as pendin
       },
     });
     await spend.fetch("https://api.test/paid");
-    assert.deepEqual(await spend.label(spend.last()!, "used"), { posted: true, status: expected });
+    assert.deepEqual(await spend.label(spend.last()!, "useful"), { posted: true, status: expected });
   }
 });
 
@@ -467,11 +472,11 @@ test("a review server that is down, slow or unhappy never reaches the caller", a
     });
     await spend.fetch("https://api.test/paid");
 
-    const result = await spend.label(spend.last()!, "used", "worth it");
+    const result = await spend.label(spend.last()!, "useful", { note: "worth it" });
     assert.equal(result.posted, false, name);
     assert.match(result.error ?? "", reason, name);
     // The label is the caller's data and is written regardless.
-    assert.equal(store.receipts[0].outcome, "used", name);
+    assert.equal(store.receipts[0].outcome, "useful", name);
   }
 });
 
@@ -489,7 +494,7 @@ test("nothing is posted without a settlement to verify, or for an unlabeled verd
 
   const id = store.receipts[0].id;
   assert.equal(store.receipts[0].transaction, undefined);
-  assert.deepEqual(await spend.label(id, "failed"), { posted: false, error: "no settlement to verify" });
+  assert.deepEqual(await spend.label(id, "not_useful", { reason: "no_response" }), { posted: false, error: "no settlement to verify" });
 
   assert.deepEqual(await spend.label(id, "unlabeled"),
     { posted: false, error: "unlabeled is not a publishable verdict" });
@@ -501,7 +506,7 @@ test("the deprecated positional fetch form still works for one release", async (
   const spend = createSpend(makeClient(), store, settledTransport());
   await spend.fetch("https://api.test/paid");
   assert.equal(store.receipts.length, 1);
-  assert.deepEqual(await spend.label(spend.last()!, "used"), { posted: false });
+  assert.deepEqual(await spend.label(spend.last()!, "useful"), { posted: false });
 });
 
 test("non-standard init fields survive the Request construction and reach every leg", async () => {

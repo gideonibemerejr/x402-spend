@@ -18,11 +18,11 @@ test("CLI reports denominations with explicit scales and handles bad input witho
     const store = new SqliteSpendStore(db);
     try {
       const receipt: SpendReceipt = {
-        schema: 1, id: "a", ts: new Date().toISOString(), method: "GET",
+        schema: 2, id: "a", ts: new Date().toISOString(), method: "GET",
         resource: { url: "https://api.test/paid" }, x402Version: 2,
         scheme: "exact", network: "eip155:84532", asset: "usdc", amountAuthorized: "10000",
         amountSettled: "10000", payTo: "seller", offeredAlternatives: 1,
-        settled: true, legs: [], totalMs: 0, status: 200, outcome: "used",
+        settled: true, legs: [], totalMs: 0, status: 200, outcome: "useful",
       };
       await store.insert(receipt);
       await store.insert({ ...receipt, id: "b", asset: "other", amountSettled: "123" });

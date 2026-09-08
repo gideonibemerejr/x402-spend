@@ -5,7 +5,7 @@ import type { SpendReceipt } from "./receipt.js";
 
 function receipt(overrides: Partial<SpendReceipt> = {}): SpendReceipt {
   return {
-    schema: 1,
+    schema: 2,
     id: crypto.randomUUID(),
     ts: new Date().toISOString(),
     method: "GET",
@@ -44,16 +44,16 @@ test("label updates outcome in place, including inside the JSON", async () => {
   const store = new SqliteSpendStore(":memory:");
   const r = receipt();
   await store.insert(r);
-  await store.label(r.id, "used", "answered the question");
+  await store.label(r.id, "useful", { note: "answered the question" });
   const [row] = store.list();
-  assert.equal(row.outcome, "used");
+  assert.equal(row.outcome, "useful");
   assert.equal(row.outcomeNote, "answered the question");
   store.close();
 });
 
 test("label throws on unknown id", async () => {
   const store = new SqliteSpendStore(":memory:");
-  await assert.rejects(() => store.label("nope", "used"), /no receipt with id/);
+  await assert.rejects(() => store.label("nope", "useful"), /no receipt with id/);
   store.close();
 });
 
@@ -77,11 +77,11 @@ test("label without a note removes the JSON key and clears a previous note", asy
     const r = receipt();
     await store.insert(r);
     for (const note of [undefined, "useful", "", undefined]) {
-      await store.label(r.id, "used", note);
+      await store.label(r.id, "useful", { note });
       const [row] = store.list();
       assert.equal(row.outcomeNote, note);
       assert.equal(Object.hasOwn(row, "outcomeNote"), note !== undefined);
-      assert.equal(row.outcome, "used");
+      assert.equal(row.outcome, "useful");
     }
   } finally { store.close(); }
 });

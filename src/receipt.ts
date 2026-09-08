@@ -7,18 +7,43 @@ import type { PaymentRequirements, ResourceInfo, SettleResponse } from "@x402/co
  * Consumers should use this field when migrating stored receipts across future
  * schema changes.
  */
-export const RECEIPT_SCHEMA_VERSION = 1;
+export const RECEIPT_SCHEMA_VERSION = 2;
 
 /**
- * Caller-assigned disposition of a paid response.
+ * Caller-assigned disposition of a paid response. Two outcomes, not four.
  *
- * - `used`: the response contributed to the caller's result.
- * - `retried`: the caller paid again for a replacement response.
- * - `discarded`: the response was valid but not useful.
- * - `failed`: the paid response could not be used because the task failed.
- * - `unlabeled`: no disposition has been assigned yet.
+ * The response either gave the caller what they were after or it did not.
+ * Whether they then retried, went elsewhere or gave up is recovery from that
+ * failure — {@link OutcomeRecovery}, a separate axis — rather than a third kind
+ * of outcome, because retrying and discarding both cost money and both follow
+ * the same failure.
+ *
+ * - `useful`: the response gave the caller what they asked for.
+ * - `not_useful`: it did not. {@link OutcomeReason} says why.
+ * - `unlabeled`: no disposition has been assigned yet. Not an outcome; the
+ *   state before one, kept distinct so an unjudged call is never counted as a
+ *   judgment either way.
  */
-export type Outcome = "used" | "retried" | "discarded" | "failed" | "unlabeled";
+export type Outcome = "useful" | "not_useful" | "unlabeled";
+
+/**
+ * Why a response was not useful. A closed set, so reasons aggregate across
+ * calls instead of each describing one.
+ *
+ * `wrong`, `empty` and `malformed` are kept apart deliberately: the difference
+ * between an endpoint that is broken and one that is lying is a different fact
+ * about a seller, and a single failure rate throws it away.
+ */
+export type OutcomeReason =
+  | "no_response"
+  | "empty"
+  | "malformed"
+  | "wrong"
+  | "stale"
+  | "insufficient";
+
+/** What the caller did after a response that was not useful. Never an outcome. */
+export type OutcomeRecovery = "none" | "retried_same" | "went_elsewhere" | "abandoned";
 
 /**
  * One HTTP request/response exchange made while resolving a metered fetch.
@@ -110,6 +135,10 @@ export interface SpendReceipt {
   // ---- outcome ----
   /** Caller-assigned disposition; initialized to `unlabeled`. */
   outcome: Outcome;
+  /** Why the response was not useful. Present only on `not_useful`. */
+  outcomeReason?: OutcomeReason;
+  /** What the caller did next. Optional, and never an outcome in its own right. */
+  outcomeRecovery?: OutcomeRecovery;
   /** Optional caller-supplied explanation for the assigned outcome. */
   outcomeNote?: string;
   /** Caller-supplied work category, such as `web-search` or `geocode`. */

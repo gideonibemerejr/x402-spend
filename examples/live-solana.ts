@@ -66,7 +66,7 @@ console.log({
 });
 
 // The label is written locally first; publishing is best effort and never throws.
-const result = await spend.label(id, "used", "live Solana devnet end-to-end check");
+const result = await spend.label(id, "useful", { note: "live Solana devnet end-to-end check" });
 console.log(result);
 
 if (result.posted) {
