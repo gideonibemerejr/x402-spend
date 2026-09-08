@@ -76,6 +76,11 @@ never published, and `unlabeled` is not a publishable verdict.
 See [x402-spend-reviews](https://github.com/gideonibemerejr/x402-spend-reviews) for the verification
 rule, and `examples/live-sepolia.ts` for one real paid call end to end.
 
+`examples/live-solana.ts` is the same call on Solana devnet, under the exact-SVM scheme. There is no
+`seller-solana.ts` to pair it with: a local Solana seller would need a facilitator that settles
+Solana, which is a longer detour than it is worth when the Base loop already proved the plumbing. So
+`RESOURCE_URL` has to name a real endpoint that quotes a Solana network.
+
 ## The report
 
 ```sh
