@@ -328,13 +328,14 @@ let wantedNetwork: string | undefined;
 const selectNetwork = (_version: number, options: PaymentRequirements[]): PaymentRequirements =>
   options.find((option) => canonicalNetwork(option.network) === wantedNetwork) ?? options[0];
 
-const client = new x402Client(selectNetwork).setSpendControls({
-  maxAmountPerPayment: MAX_PER_CALL,
-  // BNB carries Binance-Peg USDC rather than a Circle issue, so it is not a
-  // default asset and the USD ceiling above does not reach it. The plan's
-  // frozen `price` column is what bounds those rows; keep an eye on them.
-  allowedAssets: true,
-});
+// Default assets only, under a hard per-payment ceiling. `allowedAssets: true`
+// was here for BNB, whose Binance-Peg USDC is not a Circle issue and so is not
+// a default asset the ceiling reaches. BNB left the run when the sample froze —
+// its whole catalog presence is one grade B provider in out-of-scope categories
+// — and with it the reason to accept any asset at all. Every network the plan
+// now names quotes Circle USDC, which the scheme recognizes, so the tighter
+// setting costs the run nothing and refuses an unrecognized token outright.
+const client = new x402Client(selectNetwork).setSpendControls({ maxAmountPerPayment: MAX_PER_CALL });
 
 let evmAddress: string | undefined;
 if (EVM_PRIVATE_KEY && families.has("eip155")) {
