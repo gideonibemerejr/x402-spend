@@ -425,7 +425,7 @@ test("a configured review endpoint receives exactly one post carrying no receipt
   assert.equal(body.outcome, "useful");
   assert.equal(body.note, "worth it");
   assert.equal(body.taskClass, "web-search");
-  assert.equal(body.schema, 1);
+  assert.equal(body.schema, 2);
   assert.ok(body.transaction);
   assert.ok(body.payer);
   for (const local of ["id", "legs", "status", "method", "offeredAlternatives", "outcomeNote", "totalMs"]) {

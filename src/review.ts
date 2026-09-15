@@ -5,6 +5,19 @@ import type { Outcome, OutcomeReason, OutcomeRecovery, SpendReceipt } from "./re
 export type ReviewOutcome = Exclude<Outcome, "unlabeled">;
 
 /**
+ * Current version of the review wire format.
+ *
+ * Distinct from `RECEIPT_SCHEMA_VERSION`, which versions the local store:
+ * a receipt can be re-read and migrated in place, while a published review is
+ * already in someone else's database and has to say which vocabulary it used.
+ * Bumped to 2 when the four peer labels became two outcomes with a reason code.
+ * Servers refuse 1 rather than reading it under the new vocabulary, because
+ * `discarded` and `failed` do not map onto `useful`/`not_useful` without
+ * inventing a reason nobody recorded.
+ */
+export const REVIEW_SCHEMA_VERSION = 2;
+
+/**
  * What a client publishes about one settled call, and nothing else.
  *
  * Receipt internals stay local: legs, byte counts, HTTP status, method, offered
@@ -12,7 +25,7 @@ export type ReviewOutcome = Exclude<Outcome, "unlabeled">;
  * `payer` are required because they are what makes the record checkable.
  */
 export interface ReviewSubmission {
-  schema: 1;
+  schema: typeof REVIEW_SCHEMA_VERSION;
   /** `resource.url` with its query string and fragment stripped. */
   resourceUrl: string;
   taskClass?: string;
@@ -109,7 +122,7 @@ export function buildSubmission(
   if (!receipt.transaction || !receipt.payer) return undefined;
   const amount = receipt.amountSettled ?? receipt.amountAuthorized;
   return {
-    schema: 1,
+    schema: REVIEW_SCHEMA_VERSION,
     resourceUrl: publicUrl(receipt.resource.url),
     ...(receipt.taskClass !== undefined ? { taskClass: receipt.taskClass } : {}),
     network: receipt.network,
