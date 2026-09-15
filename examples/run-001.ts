@@ -27,6 +27,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { x402Client } from "@x402/core/client";
+import type { PaymentRequirements } from "@x402/core/types";
 import { registerExactEvmScheme } from "@x402/evm/exact/client";
 import { toClientEvmSigner } from "@x402/evm";
 import { privateKeyToAccount } from "viem/accounts";
@@ -73,6 +74,38 @@ type Tier = (typeof TIER)[number];
 const CAIP2 = /^(eip155:[1-9]\d{0,18}|solana:[1-9A-HJ-NP-Za-km-z]{32,44})$/;
 
 /**
+ * Network spellings seen in 402 quotes, mapped to CAIP-2.
+ *
+ * A deliberate local copy of the review server's alias table rather than an
+ * import: this is an example in a different package, and the server owns the
+ * canonical list. Kept to the spellings a seller in this run might quote, so a
+ * row asking for Base is not sent elsewhere because the quote said `base`.
+ */
+const ALIASES: Readonly<Record<string, string>> = {
+  base: "eip155:8453",
+  "base-mainnet": "eip155:8453",
+  "base-sepolia": "eip155:84532",
+  avalanche: "eip155:43114",
+  "avalanche-fuji": "eip155:43113",
+  arbitrum: "eip155:42161",
+  "arbitrum-one": "eip155:42161",
+  bsc: "eip155:56",
+  bnb: "eip155:56",
+  "binance-smart-chain": "eip155:56",
+  polygon: "eip155:137",
+  solana: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+  "solana-mainnet": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+  "solana-mainnet-beta": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+  "solana:mainnet": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+  "solana:mainnet-beta": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+  "solana-devnet": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+  "solana:devnet": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+};
+
+const canonicalNetwork = (network: string): string =>
+  CAIP2.test(network) ? network : (ALIASES[network.toLowerCase()] ?? network);
+
+/**
  * One pre-registered call.
  *
  * `endpoint` is the full URL as it will be requested, query string included;
@@ -117,6 +150,8 @@ interface RowResult {
   asset?: string;
   amount?: string;
   settled?: boolean;
+  /** Set only when the settlement landed on a different network than the plan named. */
+  networkAsked?: string;
   paidMs?: number;
   error?: string;
 }
@@ -139,6 +174,7 @@ function loadPlan(path: string): PlanRow[] {
   if (!Array.isArray(parsed)) fail(`${path}: must be an array of rows`);
 
   const problems: string[] = [];
+  const awaiting = new Set<string>();
   const seen = new Set<string>();
   for (const [index, row] of (parsed as PlanRow[]).entries()) {
     // 1-based: the reader is counting entries in a JSON file, not indexing one.
@@ -149,8 +185,16 @@ function loadPlan(path: string): PlanRow[] {
       complain("must be an object");
       continue;
     }
-    for (const field of ["id", "endpoint", "provider", "grade", "price", "query", "expected"] as const) {
+    for (const field of ["id", "endpoint", "provider", "grade", "price"] as const) {
       if (typeof row[field] !== "string" || row[field].trim() === "") complain(`${field} is required`);
+    }
+    // Counted rather than complained about one by one. A frozen sample whose
+    // mechanical fields are filled and whose instrument columns are not yet
+    // written is a normal state to commit, and listing it twice per row would
+    // bury the problems that are actually wrong.
+    for (const field of ["query", "expected"] as const) {
+      if (typeof row[field] !== "string") complain(`${field} must be a string`);
+      else if (row[field].trim() === "") awaiting.add(row.id ?? where);
     }
     if (typeof row.id === "string") {
       if (seen.has(row.id)) complain("id is not unique");
@@ -184,6 +228,14 @@ function loadPlan(path: string): PlanRow[] {
     fail(
       `${path} has no rows. It is the pre-registered expectation set: write the question and the ` +
         `expected answer for each call and commit them before paying anyone, per protocol step 2.`
+    );
+  }
+  if (awaiting.size) {
+    fail(
+      `${path}: ${awaiting.size} of ${parsed.length} rows still need \`query\` and \`expected\`.\n` +
+        `They are the pre-registered expectation set and are written by hand before anyone is paid, ` +
+        `per protocol step 2 — the label is graded against them, so a row without them cannot be ` +
+        `honestly reviewed.\n  ${[...awaiting].join(", ")}`
     );
   }
   return parsed as PlanRow[];
@@ -250,7 +302,33 @@ const families = new Set(plan.map((row) => row.network.split(":")[0]));
 if (families.has("eip155") && !EVM_PRIVATE_KEY) fail("missing in .env: EVM_PRIVATE_KEY — the plan has eip155 rows");
 if (families.has("solana") && !SVM_PRIVATE_KEY) fail("missing in .env: SVM_PRIVATE_KEY — the plan has solana rows");
 
-const client = new x402Client().setSpendControls({
+/**
+ * The network the row being paid asked for, read by the selector below.
+ *
+ * A module-level handoff rather than an argument because the selector is fixed
+ * at client construction and cannot see the call. That is only safe because
+ * this run is strictly sequential — one row is in flight at a time — and it is
+ * another reason not to make these calls concurrent.
+ */
+let wantedNetwork: string | undefined;
+
+/**
+ * Picks the payment option on the network the plan named.
+ *
+ * The default selector takes the first option offered, which would leave the
+ * plan's `network` column decorative: a provider quoting Base, Solana and
+ * Avalanche would always be paid on whichever it happened to list first. Axis 1
+ * needs a verified payment on each of the five networks, so which one a row
+ * settles on has to be the plan's decision rather than the seller's ordering.
+ *
+ * Falls back to the first option when the row's network is not offered. The
+ * receipt then records what was actually paid, and the mismatch is visible in
+ * the results log rather than hidden by a refusal.
+ */
+const selectNetwork = (_version: number, options: PaymentRequirements[]): PaymentRequirements =>
+  options.find((option) => canonicalNetwork(option.network) === wantedNetwork) ?? options[0];
+
+const client = new x402Client(selectNetwork).setSpendControls({
   maxAmountPerPayment: MAX_PER_CALL,
   // BNB carries Binance-Peg USDC rather than a Circle issue, so it is not a
   // default asset and the USD ceiling above does not reach it. The plan's
@@ -308,6 +386,7 @@ for (const [index, row] of pending.entries()) {
   const position = `${String(index + 1).padStart(2, " ")}/${pending.length}`;
   process.stdout.write(`${position} ${row.id} ${row.category} ${row.provider} … `);
 
+  wantedNetwork = row.network;
   const attempt: RowResult = { id: row.id, attemptedAt: new Date().toISOString(), ok: false };
   let receipt: SpendReceipt | undefined;
   // `last()` is the most recent receipt on the spend, not this call's: a row
@@ -351,6 +430,10 @@ for (const [index, row] of pending.entries()) {
     attempt.amount = receipt.amountSettled ?? receipt.amountAuthorized;
     attempt.settled = receipt.settled;
     attempt.paidMs = paidMs(receipt);
+    // Recorded rather than refused: a row that settled on a network the plan did
+    // not ask for still paid, and Axis 1 needs to see which networks were
+    // actually reachable rather than which ones were requested.
+    if (canonicalNetwork(receipt.network) !== row.network) attempt.networkAsked = row.network;
     tally(attempt);
   }
 
