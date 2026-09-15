@@ -17,7 +17,8 @@
  *
  * Configure .env (see .env.example), then:
  *
- *   npm run example:run-001
+ *   npm run example:run-001 -- --check   # validate the plan, pay nothing
+ *   npm run example:run-001              # pay every row
  *
  * RESOURCE_URL is unused: every row names its own endpoint.
  *
@@ -294,6 +295,34 @@ const MAX_PER_CALL = process.env.MAX_PER_CALL ?? "$0.25";
 if (!REVIEW_ENDPOINT) fail("missing in .env: REVIEW_ENDPOINT — see .env.example");
 
 const plan = loadPlan(PLAN_PATH);
+
+/**
+ * `--check` validates the plan and pays nothing.
+ *
+ * Without it, confirming that the plan is complete and running the run are the
+ * same command: the moment the last `expected` is written, the thing that used
+ * to refuse starts spending. Nobody should have to rebuild the plan's validity
+ * in their head to find out whether it is safe to type.
+ */
+if (process.argv.includes("--check")) {
+  const perCategory = new Map<string, Set<string>>();
+  for (const row of plan) {
+    const providers = perCategory.get(row.category) ?? new Set<string>();
+    providers.add(row.provider);
+    perCategory.set(row.category, providers);
+  }
+  console.log(`${PLAN_PATH}: ${plan.length} rows, complete and runnable. Nothing was paid.`);
+  for (const [category, providers] of perCategory) {
+    const calls = plan.filter((row) => row.category === category).length;
+    console.log(`  ${category.padEnd(18)} ${String(calls).padStart(2)} calls / ${providers.size} providers`);
+  }
+  const networks = new Map<string, number>();
+  for (const row of plan) networks.set(row.network, (networks.get(row.network) ?? 0) + 1);
+  for (const [network, count] of networks) console.log(`  ${network} — ${count}`);
+  console.log(`\nTo run it for real: npm run example:run-001`);
+  process.exit(0);
+}
+
 const done = loadResults(RESULTS_PATH);
 
 // Only the families the plan actually uses need a key, so a Solana-free run

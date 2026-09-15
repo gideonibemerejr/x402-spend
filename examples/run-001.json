@@ -184,8 +184,8 @@
     "network": "eip155:8453",
     "category": "search_known",
     "tier": "easy_famous",
-    "query": "",
-    "expected": ""
+    "query": "who won the 2026 FIFA Men's World Cup",
+    "expected": "Spain"
   },
   {
     "id": "sk-02",
@@ -196,8 +196,8 @@
     "network": "eip155:8453",
     "category": "search_known",
     "tier": "specific_public",
-    "query": "",
-    "expected": ""
+    "query": "who was the men's soccer head coach at Austin College in 2013",
+    "expected": "Mark Hudson"
   },
   {
     "id": "sk-03",
@@ -208,8 +208,8 @@
     "network": "eip155:8453",
     "category": "search_known",
     "tier": "recent",
-    "query": "",
-    "expected": ""
+    "query": "which club did Carlos Baleba recently join",
+    "expected": "Manchester United"
   },
   {
     "id": "sk-04",
@@ -220,8 +220,8 @@
     "network": "eip155:8453",
     "category": "search_known",
     "tier": "precise_numeric",
-    "query": "",
-    "expected": ""
+    "query": "how many Champions League trophies has Real Madrid won",
+    "expected": "15"
   },
   {
     "id": "sk-05",
@@ -232,8 +232,8 @@
     "network": "eip155:8453",
     "category": "search_known",
     "tier": "easy_famous",
-    "query": "",
-    "expected": ""
+    "query": "who won the 2026 NBA Finals",
+    "expected": "New York Knicks"
   },
   {
     "id": "sk-06",
@@ -244,8 +244,8 @@
     "network": "eip155:8453",
     "category": "search_known",
     "tier": "recent",
-    "query": "",
-    "expected": ""
+    "query": "what is the name of Cooper SA and Tyler ICU's recent album",
+    "expected": "One Day in Tembisa"
   },
   {
     "id": "sk-07",
@@ -256,8 +256,8 @@
     "network": "eip155:8453",
     "category": "search_known",
     "tier": "specific_public",
-    "query": "",
-    "expected": ""
+    "query": "who was the head football coach at Cypress Woods High School in Cypress, Texas in 2010",
+    "expected": "David Jones"
   },
   {
     "id": "sk-08",
@@ -268,8 +268,8 @@
     "network": "eip155:8453",
     "category": "search_known",
     "tier": "precise_numeric",
-    "query": "",
-    "expected": ""
+    "query": "what is the official seating capacity of Q2 Stadium in Austin, Texas",
+    "expected": "20,738"
   },
   {
     "id": "sr-01",
@@ -279,8 +279,8 @@
     "price": "$0.0100",
     "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
     "category": "search_relevance",
-    "query": "",
-    "expected": ""
+    "query": "who is considered the best manager of all time in world football",
+    "expected": "Results discussing candidates for greatest football manager \u2014 Ferguson, Guardiola, Sacchi, Cruyff, Michels or similar \u2014 with reasoning or rankings. Outcome 1 if on-topic and current enough to act on; outcome 2 if off-topic, stale, or empty."
   },
   {
     "id": "sr-02",
@@ -290,8 +290,8 @@
     "price": "$0.0200",
     "network": "eip155:8453",
     "category": "search_relevance",
-    "query": "",
-    "expected": ""
+    "query": "who is considered the best manager of all time in world football",
+    "expected": "Results discussing candidates for greatest football manager \u2014 Ferguson, Guardiola, Sacchi, Cruyff, Michels or similar \u2014 with reasoning or rankings. Outcome 1 if on-topic and current enough to act on; outcome 2 if off-topic, stale, or empty."
   },
   {
     "id": "sr-03",
@@ -301,8 +301,8 @@
     "price": "$0.0200",
     "network": "eip155:8453",
     "category": "search_relevance",
-    "query": "",
-    "expected": ""
+    "query": "who is considered the best manager of all time in world football",
+    "expected": "Results discussing candidates for greatest football manager \u2014 Ferguson, Guardiola, Sacchi, Cruyff, Michels or similar \u2014 with reasoning or rankings. Outcome 1 if on-topic and current enough to act on; outcome 2 if off-topic, stale, or empty."
   },
   {
     "id": "sr-04",
@@ -312,8 +312,8 @@
     "price": "$0.0500",
     "network": "eip155:8453",
     "category": "search_relevance",
-    "query": "",
-    "expected": ""
+    "query": "who is considered the best manager of all time in world football",
+    "expected": "Results discussing candidates for greatest football manager \u2014 Ferguson, Guardiola, Sacchi, Cruyff, Michels or similar \u2014 with reasoning or rankings. Outcome 1 if on-topic and current enough to act on; outcome 2 if off-topic, stale, or empty."
   },
   {
     "id": "px-01",
@@ -323,8 +323,8 @@
     "price": "$0.0010",
     "network": "eip155:8453",
     "category": "price",
-    "query": "",
-    "expected": ""
+    "query": "current price of Bitcoin in USD",
+    "expected": "BTC/USD spot at call time, within 1%. Checked against a public exchange immediately after the call."
   },
   {
     "id": "px-02",
@@ -334,8 +334,8 @@
     "price": "$0.0010",
     "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
     "category": "price",
-    "query": "",
-    "expected": ""
+    "query": "current price of Bitcoin in USD",
+    "expected": "BTC/USD spot at call time, within 1%. Checked against a public exchange immediately after the call."
   },
   {
     "id": "px-03",
@@ -345,8 +345,8 @@
     "price": "$0.0050",
     "network": "eip155:42161",
     "category": "price",
-    "query": "",
-    "expected": ""
+    "query": "current price of Bitcoin in USD",
+    "expected": "BTC/USD spot at call time, within 1%. Checked against a public exchange immediately after the call."
   },
   {
     "id": "px-04",
@@ -356,8 +356,8 @@
     "price": "$0.0030",
     "network": "eip155:8453",
     "category": "price",
-    "query": "",
-    "expected": ""
+    "query": "current price of Bitcoin in USD",
+    "expected": "BTC/USD spot at call time, within 1%. Checked against a public exchange immediately after the call."
   },
   {
     "id": "wx-01",
@@ -367,8 +367,8 @@
     "price": "$0.0030",
     "network": "eip155:8453",
     "category": "weather",
-    "query": "",
-    "expected": ""
+    "query": "Austin, TX",
+    "expected": "Current conditions for Austin, TX \u2014 temperature within the endpoint's advertised resolution, correct location. Checked against a public source at call time."
   },
   {
     "id": "wx-02",
@@ -378,7 +378,7 @@
     "price": "$0.0030",
     "network": "eip155:8453",
     "category": "weather",
-    "query": "",
-    "expected": ""
+    "query": "78701",
+    "expected": "Current conditions for ZIP 78701 (downtown Austin, TX) \u2014 temperature within the endpoint's advertised resolution, correct location. Checked against a public source at call time."
   }
 ]
