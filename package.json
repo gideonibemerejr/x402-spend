@@ -28,7 +28,8 @@
     "typecheck:examples": "tsc -p tsconfig.examples.json",
     "example:seller": "node --env-file=.env examples/seller-sepolia.ts",
     "example:live": "npm run build && node --env-file=.env examples/live-sepolia.ts",
-    "example:live-solana": "npm run build && node --env-file=.env examples/live-solana.ts"
+    "example:live-solana": "npm run build && node --env-file=.env examples/live-solana.ts",
+    "example:run-001": "npm run build && node --env-file=.env examples/run-001.ts"
   },
   "peerDependencies": {
     "@x402/core": ">=2.0.0",

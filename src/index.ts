@@ -15,6 +15,7 @@ export {
 } from "./spend.js";
 export {
   buildSubmission,
+  REVIEW_SCHEMA_VERSION,
   type LabelResult,
   type ReviewOptions,
   type ReviewOutcome,

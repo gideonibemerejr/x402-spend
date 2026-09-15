@@ -97,6 +97,17 @@ rule, and `examples/live-sepolia.ts` for one real paid call end to end.
 Solana, which is a longer detour than it is worth when the Base loop already proved the plumbing. So
 `RESOURCE_URL` has to name a real endpoint that quotes a Solana network.
 
+`examples/run-001.ts` is the research-run harness. It reads `examples/run-001.json` — the frozen
+plan, one row per call, each carrying the question and the expected answer written before anyone was
+paid — and pays every row once, in order, printing the receipt id, status and settlement per row and
+a failure summary at the end. It continues past a dead endpoint, because a row that never settled is
+itself a finding. It is resumable: a row that already settled is skipped rather than bought twice.
+
+**It labels nothing.** The labels are applied by hand afterward, against each row's committed
+`expected`. That is the point of the split — the hand labels are the reference set any automatic
+labeler is later validated against, and a harness that graded its own calls would be measuring
+itself.
+
 ## The report
 
 ```sh
