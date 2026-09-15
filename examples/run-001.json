@@ -7,8 +7,8 @@
     "price": "$0.0025",
     "network": "eip155:8453",
     "category": "geocode_forward",
-    "query": "",
-    "expected": ""
+    "query": "Inn Cahoots, 1221 E. 6th, Austin, TX",
+    "expected": "30.2639012, -97.7299819 (within 100 m)"
   },
   {
     "id": "geo-f-02",
@@ -18,8 +18,8 @@
     "price": "$0.0025",
     "network": "eip155:8453",
     "category": "geocode_forward",
-    "query": "",
-    "expected": ""
+    "query": "Maggie Mae's, 323 E. 6th, Austin, TX",
+    "expected": "30.2668798, -97.7397606 (within 100 m)"
   },
   {
     "id": "geo-f-03",
@@ -29,8 +29,8 @@
     "price": "$0.0010",
     "network": "eip155:43114",
     "category": "geocode_forward",
-    "query": "",
-    "expected": ""
+    "query": "Banger's on Rainey, 79 Rainey St., Austin, TX",
+    "expected": "30.2589115, -97.7383884 (within 100 m)"
   },
   {
     "id": "geo-f-04",
@@ -40,8 +40,8 @@
     "price": "$0.0010",
     "network": "eip155:43114",
     "category": "geocode_forward",
-    "query": "",
-    "expected": ""
+    "query": "Speakeasy, 412 Congress Ave., Austin, TX",
+    "expected": "30.2668402, -97.7437357 (within 100 m)"
   },
   {
     "id": "geo-f-05",
@@ -51,8 +51,8 @@
     "price": "$0.0020",
     "network": "eip155:8453",
     "category": "geocode_forward",
-    "query": "",
-    "expected": ""
+    "query": "Clive Bar on Rainey, 609 Davis St., Austin, TX",
+    "expected": "30.2600222, -97.738534 (within 100 m)"
   },
   {
     "id": "geo-f-06",
@@ -62,8 +62,8 @@
     "price": "$0.0020",
     "network": "eip155:8453",
     "category": "geocode_forward",
-    "query": "",
-    "expected": ""
+    "query": "Hotel Van Zandt, 605 Davis St., Austin, TX",
+    "expected": "30.2600417, -97.7391353 (within 100 m)"
   },
   {
     "id": "geo-f-07",
@@ -73,8 +73,8 @@
     "price": "$0.0020",
     "network": "eip155:8453",
     "category": "geocode_forward",
-    "query": "",
-    "expected": ""
+    "query": "YETI Flagship, 220 S. Congress, Austin, TX",
+    "expected": "30.2593922, -97.7463191 (within 100 m)"
   },
   {
     "id": "geo-f-08",
@@ -84,8 +84,8 @@
     "price": "$0.0020",
     "network": "eip155:8453",
     "category": "geocode_forward",
-    "query": "",
-    "expected": ""
+    "query": "Waterloo Records, 1105 N. Lamar, Austin, TX",
+    "expected": "30.2760676, -97.7513754 (within 100 m)"
   },
   {
     "id": "geo-r-01",
@@ -95,8 +95,8 @@
     "price": "$0.0100",
     "network": "eip155:8453",
     "category": "geocode_reverse",
-    "query": "",
-    "expected": ""
+    "query": "30.2721092, -97.74343",
+    "expected": "street number 203, street W. 10th (Austin, TX) \u2014 venue is Texas Bankers Association"
   },
   {
     "id": "geo-r-02",
@@ -106,8 +106,8 @@
     "price": "$0.0100",
     "network": "eip155:8453",
     "category": "geocode_reverse",
-    "query": "",
-    "expected": ""
+    "query": "30.2664251, -97.7377469",
+    "expected": "street number 515, street E. 6th (Austin, TX) \u2014 venue is Flamingo Cantina"
   },
   {
     "id": "geo-r-03",
@@ -117,8 +117,8 @@
     "price": "$0.0100",
     "network": "eip155:8453",
     "category": "geocode_reverse",
-    "query": "",
-    "expected": ""
+    "query": "30.2670862, -97.7362906",
+    "expected": "street number 611, street E. 7th (Austin, TX) \u2014 venue is The Creek & The Cave"
   },
   {
     "id": "geo-r-04",
@@ -128,8 +128,8 @@
     "price": "$0.0100",
     "network": "eip155:8453",
     "category": "geocode_reverse",
-    "query": "",
-    "expected": ""
+    "query": "30.2569903, -97.723357",
+    "expected": "street number 2000, street E. Cesar Chavez (Austin, TX) \u2014 venue is High Noon"
   },
   {
     "id": "geo-r-05",
@@ -139,8 +139,8 @@
     "price": "$0.0025",
     "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
     "category": "geocode_reverse",
-    "query": "",
-    "expected": ""
+    "query": "30.2506677, -97.7495642",
+    "expected": "street number 1316, street S. Congress (Austin, TX) \u2014 venue is Hotel San Jose"
   },
   {
     "id": "geo-r-06",
@@ -150,8 +150,8 @@
     "price": "$0.0025",
     "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
     "category": "geocode_reverse",
-    "query": "",
-    "expected": ""
+    "query": "30.2621072, -97.7294149",
+    "expected": "street number 1308, street E. 4th St. (Austin, TX) \u2014 venue is Scoot Inn"
   },
   {
     "id": "geo-r-07",
@@ -161,8 +161,8 @@
     "price": "$0.0010",
     "network": "eip155:42161",
     "category": "geocode_reverse",
-    "query": "",
-    "expected": ""
+    "query": "30.2527081, -97.7110743",
+    "expected": "street number 2922, street E. Cesar Chavez (Austin, TX) \u2014 venue is Bathe Austin"
   },
   {
     "id": "geo-r-08",
@@ -172,8 +172,8 @@
     "price": "$0.0010",
     "network": "eip155:42161",
     "category": "geocode_reverse",
-    "query": "",
-    "expected": ""
+    "query": "30.2680521, -97.7368682",
+    "expected": "street number 710, street Red River (Austin, TX) \u2014 venue is Valhalla"
   },
   {
     "id": "sk-01",
