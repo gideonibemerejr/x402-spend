@@ -23,13 +23,15 @@
   },
   "scripts": {
     "build": "tsc -p .",
-    "test": "npm run build && node --no-warnings --test \"dist/**/*.test.js\"",
+    "test": "npm run build && node --no-warnings --test \"dist/**/*.test.js\" && npm run test:backfill",
     "report": "node --no-warnings dist/cli.js report",
     "typecheck:examples": "tsc -p tsconfig.examples.json",
     "example:seller": "node --env-file=.env examples/seller-sepolia.ts",
     "example:live": "npm run build && node --env-file=.env examples/live-sepolia.ts",
     "example:live-solana": "npm run build && node --env-file=.env examples/live-solana.ts",
-    "example:run-001": "npm run build && node --env-file=.env examples/run-001.ts"
+    "example:run-001": "npm run build && node --env-file=.env examples/run-001.ts",
+    "test:backfill": "node --no-warnings --test scripts/backfill-run-001.test.mjs",
+    "backfill:run-001": "node --no-warnings scripts/backfill-run-001.mjs"
   },
   "peerDependencies": {
     "@x402/core": ">=2.0.0",
