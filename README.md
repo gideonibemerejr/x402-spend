@@ -187,6 +187,10 @@ Bytes are recorded only from `Content-Length`. Responses without that header, in
 - **No routing.** It tells you which endpoint was worth it; it does not pick one for you (yet).
 - **No spend enforcement.** Caps and allowlists stay in your x402 client where they belong.
 
+## Run 001 review backfill
+
+The September 15 research experiment has a separate, read-only audit and explicitly confirmed registry-publishing workflow. Run `npm run backfill:run-001` from this repository to reconcile the original labeled SQLite receipts and check all 30 transaction-bearing reviews against on-chain transfers, **without paying endpoints or writing production reviews**. Publication requires a second command with an audit SHA-256 approval. See [Run 001 backfill instructions](docs/run-001-backfill.md) for prerequisites, excluded prepaid credit, data-disclosure caveats, and the exact commands.
+
 ## Privacy
 
 Local only by default. Receipts go to a SQLite file on your machine and nothing leaves it unless you
