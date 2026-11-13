@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   EXPECTED, readReceipts, reconcile, makeAudit, matchTransfer, submissionFor,
+  creditedSettlementEvidence,
   publishAudit, saveAudit,
 } from './backfill-run-001.mjs'
 
@@ -17,7 +18,7 @@ const solPayer='SolanaPayerExample'
 const solPayTo='SolanaSellerExample'
 const token='0x3333333333333333333333333333333333333333'
 
-function setup(){
+function setup({ prepaidCredit=false }={}){
   const dir=mkdtempSync(join(tmpdir(),'backfill-001-'))
   const dbPath=join(dir,'run-001.db')
   const planPath=join(dir,'run-001.json')
@@ -27,13 +28,14 @@ function setup(){
   const insert=db.prepare('INSERT INTO receipts VALUES (?, ?, ?, ?, ?)')
   const plan=[];const results=[];const receipts=[]
   for(let i=0;i<34;i++){
-    const planId=i===30?'geo-r-02':`row-${String(i).padStart(2,'0')}`
+    const planId=i===30?'geo-r-02':(prepaidCredit && i===0?'geo-r-01':`row-${String(i).padStart(2,'0')}`)
+    const isPrepaid = prepaidCredit && (i===0 || i===30)
     const labeled=i<31
     const network=i===4||i===5?svmNetwork:evmNetwork
     const key=network===svmNetwork?`SolanaTransaction${i}`:`0x${(i+1).toString(16).padStart(64,'0')}`
-    const receipt={schema:2,id:`uuid-${i}`,ts:'2026-09-15T05:59:00.000Z',resource:{url:`https://example.com/api/${i}`},taskClass:'search_known',network,
+    const receipt={schema:2,id:`uuid-${i}`,ts:'2026-09-15T05:59:00.000Z',resource:{url:isPrepaid?'https://relaystation.example/reverse':`https://example.com/api/${i}`},taskClass:'search_known',network,
       asset:network===svmNetwork?'SolanaUsdcMint':token,payTo:network===svmNetwork?solPayTo:payTo,
-      amountAuthorized:'1000',amountSettled:labeled?'1000':undefined,settled:labeled,
+      amountAuthorized:isPrepaid?'10000':'1000',amountSettled:isPrepaid?'5000':(labeled?'1000':undefined),settled:labeled,
       ...(labeled && i!==30?{transaction:key}:{}),
       ...(labeled && i!==30 && i>=6?{payer}:{}),
       outcome:!labeled?'unlabeled':i<22||i===30?'useful':'not_useful',
@@ -49,7 +51,7 @@ function setup(){
   db.close()
   writeFileSync(planPath,JSON.stringify(plan))
   writeFileSync(resultsPath,JSON.stringify(results))
-  return {dir,dbPath,planPath,resultsPath,plan,results,receipts,cleanup:()=>rmSync(dir,{recursive:true,force:true})}
+  return {dir,dbPath,planPath,resultsPath,plan,results,receipts,prepaidCredit,cleanup:()=>rmSync(dir,{recursive:true,force:true})}
 }
 
 function fakeApi(fx){
@@ -63,7 +65,7 @@ function fakeApi(fx){
       assert.ok(receipt)
       const isSol=receipt.network===svmNetwork
       return {status:200,body:{found:true,network:receipt.network,transaction:receipt.transaction,truncated:false,transfers:[{
-        asset:receipt.asset,payTo:receipt.payTo,amount:'1000',payer:isSol?solPayer:payer,proof:'payment_traced'}]}}
+        asset:receipt.asset,payTo:receipt.payTo,amount:fx.prepaidCredit&&receipt.id==='uuid-0'?'10000':'1000',payer:isSol?solPayer:payer,proof:'payment_traced'}]}}
     }
     if(url.includes('/v1/reviews?resource=')){
       const resource=decodeURIComponent(url.split('resource=')[1])
@@ -154,4 +156,49 @@ test('omit locally recorded freeform notes in public submission by default',()=>
   assert.equal(payload.resourceUrl,'https://example.com/search')
   assert.equal(payload.reason,'wrong')
   assert.equal(payload.note,undefined)
+})
+
+test('RelayStation prepaid-credit exception uses exact on-chain transfer, preserves both original receipt amounts',async()=>{
+  const fx=setup({prepaidCredit:true});try{
+    const api=fakeApi(fx)
+    const before=JSON.stringify(readReceipts(fx.dbPath))
+    const audit=await makeAudit({...fx,request:api.request,delayMs:0})
+    assert.equal(audit.ready,true)
+    assert.equal(audit.errors.length,0)
+    assert.equal(audit.entries.length,30)
+    const payment=audit.entries.find(e=>e.planId==='geo-r-01')
+    assert.equal(payment.status,'verified')
+    assert.equal(payment.review.amount,'10000')
+    assert.equal(payment.prepaidCredit.receiptConsumedAtomic,'5000')
+    assert.equal(payment.prepaidCredit.creditedCallConsumedAtomic,'5000')
+    assert.match(payment.review.note,/geo-r-02 consumed the remaining 5,000/)
+    assert.equal(audit.excluded.length,1)
+    assert.equal(audit.excluded[0].planId,'geo-r-02')
+    assert.equal(audit.entries.filter(e=>e.review.note).length,1)
+    assert.equal(fx.receipts[0].amountSettled,'5000')
+    assert.equal(fx.receipts[30].amountSettled,'5000')
+    assert.equal(JSON.stringify(readReceipts(fx.dbPath)),before)
+  }finally{fx.cleanup()}
+})
+
+test('prepaid-credit allowance fails closed if linked receipts or transfer contradict the frozen evidence',()=>{
+  const fx=setup({prepaidCredit:true});try{
+    const payment=fx.receipts[0], credit=fx.receipts[30]
+    const transfer={asset:payment.asset,payTo:payment.payTo,amount:'10000',payer,proof:'payment_traced'}
+    const result=(modifiedCredit,transfers=[transfer],planId='geo-r-01')=>matchTransfer(
+      payment,{found:true,network:payment.network,transaction:payment.transaction,truncated:false,transfers},
+      {planId,creditReceipt:modifiedCredit})
+    assert.ok(creditedSettlementEvidence(payment,credit))
+    assert.equal(result(credit).prepaidCredit.onChainAtomic,'10000')
+    assert.match(result({...credit,amountSettled:'4000'}).error,/found 0/)
+    assert.match(result({...credit,transaction:'0x1234'}).error,/found 0/)
+    assert.match(result({...credit,resource:{url:'https://other.example/reverse'}}).error,/found 0/)
+    assert.match(result({...credit,payTo:'0x5555555555555555555555555555555555555555'}).error,/found 0/)
+    assert.match(result(credit,[{...transfer,amount:'9999'}]).error,/found 0/)
+    assert.match(result(credit,[{...transfer,proof:'receipt_only'}]).error,/found 0/)
+    assert.match(result(credit,[transfer,transfer]).error,/found 0/)
+    assert.match(result(credit,[transfer],'geo-r-03').error,/found 0/)
+    assert.match(result(credit,[{...transfer,payer:'0x4444444444444444444444444444444444444444'}]).error,/differs/)
+    assert.match(result(credit,[{...transfer,payer:payTo}]).error,/Self-payment/)
+  }finally{fx.cleanup()}
 })
