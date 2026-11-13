@@ -198,7 +198,7 @@ test('prepaid-credit allowance fails closed if linked receipts or transfer contr
     assert.match(result(credit,[{...transfer,proof:'receipt_only'}]).error,/found 0/)
     assert.match(result(credit,[transfer,transfer]).error,/found 0/)
     assert.match(result(credit,[transfer],'geo-r-03').error,/found 0/)
-    assert.match(result(credit,[{...transfer,payer:'0x4444444444444444444444444444444444444444'}]).error,/differs/)
+    assert.match(matchTransfer({...payment,payer},{found:true,network:payment.network,transaction:payment.transaction,truncated:false,transfers:[{...transfer,payer:'0x4444444444444444444444444444444444444444'}]},{planId:'geo-r-01',creditReceipt:credit}).error,/differs/)
     assert.match(result(credit,[{...transfer,payer:payTo}]).error,/Self-payment/)
   }finally{fx.cleanup()}
 })
