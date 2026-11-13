@@ -17,6 +17,20 @@ export const EXPECTED = Object.freeze({ planned: 34, graded: 31, useful: 23, not
 export const DEFAULT_API = 'https://api.x402spend.dev'
 export const DEFAULT_AUDIT = '.backfill/run-001-audit.json'
 export const DEFAULT_DELAY_MS = 3500 // Under the Worker demo-route limit of 20/min.
+/**
+ * Frozen Run 001 prepaid-credit exception. The first RelayStation purchase
+ * moved 10,000 atomic on-chain but accounted 5,000 of consumption for itself
+ * and 5,000 as credit consumed by the next call. No exception is inferred from
+ * a generic overpayment: both original receipts must independently agree.
+ */
+export const PREPAID_CREDIT = Object.freeze({
+  paymentPlanId: 'geo-r-01',
+  creditPlanId: 'geo-r-02',
+  network: 'eip155:8453',
+  consumedAtomic: '5000',
+  creditedAtomic: '5000',
+  onChainAtomic: '10000',
+})
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex')
 const amountString = (value) => typeof value === 'string' && /^\d{1,30}$/.test(value)
@@ -125,30 +139,75 @@ export function reconcile({ plan, results, receipts }) {
   return { candidates, excluded, errors, stats:{ planned:plan.length, receipts: receipts.length, graded: graded.length, useful, notUseful, candidateReviews:candidates.length, eligibleUseful, eligibleNotUseful, originalPayers, missingPayers:candidates.length-originalPayers } }
 }
 
+/**
+ * The only permitted exception to one transfer per receipt. Enforce the two
+ * related receipt facts before accepting the single 10,000-atomic transfer:
+ * no copied hash on the prepaid-credit consumption row, matching seller/asset,
+ * same resource and task, and 5,000+5,000 consumption. The receipt amounts are
+ * never changed or reinterpreted as two on-chain transactions.
+ */
+export function creditedSettlementEvidence(payment, credit) {
+  const rule = PREPAID_CREDIT
+  if (!payment || !credit || credit.id === payment.id ||
+      payment.network !== rule.network || credit.network !== rule.network ||
+      payment.settled !== true || credit.settled !== true ||
+      payment.amountSettled !== rule.consumedAtomic ||
+      credit.amountSettled !== rule.creditedAtomic ||
+      credit.transaction || credit.outcome !== 'useful' ||
+      !addressLike(payment.transaction) ||
+      canonical(payment.asset, rule.network) !== canonical(credit.asset, rule.network) ||
+      canonical(payment.payTo, rule.network) !== canonical(credit.payTo, rule.network) ||
+      payment.taskClass !== credit.taskClass ||
+      !(Number.isFinite(Date.parse(payment.ts)) && Number.isFinite(Date.parse(credit.ts))) ||
+      Date.parse(credit.ts) < Date.parse(payment.ts)) return undefined
+  try {
+    if (publicUrl(payment.resource.url) !== publicUrl(credit.resource.url)) return undefined
+  } catch { return undefined }
+  return {
+    paymentPlanId: rule.paymentPlanId,
+    creditPlanId: rule.creditPlanId,
+    receiptConsumedAtomic: rule.consumedAtomic,
+    creditedCallConsumedAtomic: rule.creditedAtomic,
+    onChainAtomic: rule.onChainAtomic,
+    note: 'Prepaid credit: 10,000 atomic units transferred on-chain. This call consumed 5,000; geo-r-02 consumed the remaining 5,000 without a new transfer.',
+  }
+}
+
 /** Match the *payment*, not tx.from / a Solana fee-payer. Ambiguity fails closed. */
-export function matchTransfer(receipt, description) {
+export function matchTransfer(receipt, description, { planId, creditReceipt } = {}) {
   if (!description || description.found !== true || description.truncated !== false || !Array.isArray(description.transfers)) return { error: 'Transaction not found, response truncated, or malformed verification response' }
   if (description.network !== receipt.network || description.transaction !== receipt.transaction) return { error: 'Verification response does not identify the requested transaction' }
   const network = receipt.network
   const expected = receipt.amountSettled ?? receipt.amountAuthorized
   if (!amountString(expected)) return { error: 'Receipt amount is invalid' }
-  const matches = description.transfers.filter((t) => {
+  const candidates = description.transfers.filter((t) => {
     try {
       return t.proof === 'payment_traced' && addressLike(t.payer) &&
         canonical(t.asset, network) === canonical(receipt.asset, network) &&
         canonical(t.payTo, network) === canonical(receipt.payTo, network) &&
-        amountString(t.amount) && (isEvm(network) ? BigInt(t.amount) === BigInt(expected) : BigInt(t.amount) >= BigInt(expected))
+        amountString(t.amount)
     } catch { return false }
   })
+  let matches = candidates.filter((t) => isEvm(network) ? BigInt(t.amount) === BigInt(expected) : BigInt(t.amount) >= BigInt(expected))
+  let prepaidCredit
+  // Only geo-r-01, only when an exact match was absent, and only with matching
+  // evidence for the original geo-r-02 credit drawdown. Never relax EVM rules.
+  if (matches.length === 0 && planId === PREPAID_CREDIT.paymentPlanId) {
+    const evidence = creditedSettlementEvidence(receipt, creditReceipt)
+    if (evidence && candidates.length === 1 && BigInt(candidates[0].amount) === BigInt(evidence.onChainAtomic)) {
+      matches = candidates
+      prepaidCredit = evidence
+    }
+  }
   if (matches.length !== 1) return { error: `Expected one attributable transfer matching asset, payTo and amount, found ${matches.length}` }
   const payer = matches[0].payer
   if (receipt.payer && canonical(receipt.payer, network) !== canonical(payer, network)) return { error: 'Recorded payer differs from chain transfer authority' }
   if (canonical(payer, network) === canonical(receipt.payTo, network)) return { error: 'Self-payment is not a verifiable review' }
-  return { payer, recovered: !receipt.payer }
+  return { payer, recovered: !receipt.payer, ...(prepaidCredit ? { prepaidCredit } : {}) }
 }
 
 /** Recreates the public ReviewSubmission v2, omitting potentially private notes by default. */
-export function submissionFor(receipt, payer) {
+export function submissionFor(receipt, payer, { prepaidCredit } = {}) {
   const { outcome } = receipt
   assert(outcome === 'useful' || outcome === 'not_useful', 'Unlabeled response cannot be published')
   assert(outcome !== 'not_useful' || typeof receipt.outcomeReason === 'string', 'Not useful needs reason')
@@ -158,11 +217,12 @@ export function submissionFor(receipt, payer) {
     resourceUrl: publicUrl(receipt.resource.url),
     ...(receipt.taskClass ? {taskClass:receipt.taskClass} : {}),
     network: receipt.network, asset: receipt.asset,
-    amount: receipt.amountSettled ?? receipt.amountAuthorized,
+    amount: prepaidCredit?.onChainAtomic ?? receipt.amountSettled ?? receipt.amountAuthorized,
     payTo:receipt.payTo, transaction:receipt.transaction, payer,
     outcome,
     ...(receipt.outcomeReason ? {reason:receipt.outcomeReason} : {}),
     ...(receipt.outcomeRecovery ? {recovery:receipt.outcomeRecovery} : {}),
+    ...(prepaidCredit ? { note: prepaidCredit.note } : {}),
     ...(Number.isInteger(paidLeg?.ms) && paidLeg.ms >= 0 ? {paidMs:paidLeg.ms} : {}),
     ts:receipt.ts,
   }
@@ -208,20 +268,22 @@ export async function makeAudit({dbPath='run-001.db',planPath='examples/run-001.
   // The frozen-data reconciliation is a hard prerequisite, not a warning to ignore.
   // If it fails, don't spend RPC calls or generate partially approved payloads.
   const toVerify = errors.length ? [] : reconciled.candidates
+  const creditResult = selectedResults(results).get(PREPAID_CREDIT.creditPlanId)
+  const creditReceipt = receipts.find((r) => r.id === creditResult?.receiptId)
   for(const [i,{planId,receipt}] of toVerify.entries()) {
     if (i>0 && delayMs>0) await pause(delayMs)
     let result
     try {
       const answer=await request({url:urlFor(api,'/v1/verify'),method:'POST',data:{network:receipt.network,transaction:receipt.transaction}})
       if(answer.status!==200) result={error:describeApiError(answer)}
-      else result=matchTransfer(receipt,answer.body)
+      else result=matchTransfer(receipt,answer.body,{planId,creditReceipt})
     } catch (cause) { result={error:String(cause?.message ?? cause)} }
     if(result.error) {
       errors.push(`${planId}: ${result.error}`)
       entries.push({planId,receiptId:receipt.id,status:'failed',error:result.error})
       onProgress(`${i+1}/${toVerify.length} ${planId}: verification failed`)
     } else {
-      entries.push({planId,receiptId:receipt.id,status:'verified',payerRecovered:result.recovered,review:submissionFor(receipt,result.payer),noteOmitted:!!receipt.outcomeNote})
+      entries.push({planId,receiptId:receipt.id,status:'verified',payerRecovered:result.recovered,...(result.prepaidCredit ? {prepaidCredit:result.prepaidCredit}:{}),review:submissionFor(receipt,result.payer,{prepaidCredit:result.prepaidCredit}),noteOmitted:!!receipt.outcomeNote})
       onProgress(`${i+1}/${toVerify.length} ${planId}: chain payment traced${result.recovered?' (payer recovered)':''}`)
     }
   }
