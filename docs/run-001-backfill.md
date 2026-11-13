@@ -4,7 +4,19 @@ This is a recovery/publishing workflow for the **September 15, 2026** paid resea
 
 The research report records **34 attempts**, **31 graded** (23 useful, eight not useful). Exactly **30** graded receipts carry independent transaction hashes: **22 useful, eight not useful**. The additional useful row, `geo-r-02`, used prepaid credit and has no independent settlement hash. It is **excluded** from the payment-verifiable registry, but retained in the research report.
 
-The existing receipts have 24 recorded payers and six omitted payer fields. The command resolves every transaction using the reviews Worker's **read-only** `POST /v1/verify`, and requires one matching traced transfer (network, transaction, token/mint, recipient, atomic amount, and payer). It never guesses the payer from the EVM transaction sender or Solana fee payer. This check re-verifies **all 30**, not just the six missing a payer.
+The existing receipts have 24 recorded payers and six omitted payer fields. The command resolves every transaction using the reviews Worker's **read-only** `POST /v1/verify`, and requires one matching traced transfer (network, transaction, token/mint, recipient, atomic amount, and payer), subject only to the narrowly checked `geo-r-01` prepaid-credit accounting exception documented below. It never guesses the payer from the EVM transaction sender or Solana fee payer. This check re-verifies **all 30**, not just the six missing a payer.
+
+## Prepaid-credit accounting exception (`geo-r-01`)
+
+RelayStation's first reverse-geocode request (`geo-r-01`) **transferred 10,000 atomic USDC units on Base**, but the local settlement receipt reports **5,000 consumed by this request**. The related `geo-r-02` receipt records **5,000 consumed from the remaining prepaid balance**, with **no separate transaction hash**. This is not two transfers, and the second call cannot be counted as an independently verifiable payment.
+
+The production EVM verifier correctly requires the **review submission's `amount` to equal the exact on-chain `Transfer` amount**. Sending the first receipt's `amountSettled: "5000"` therefore cannot verify against its on-chain `10000` transfer. The backfill has one **frozen, fail-closed exception** for `geo-r-01` only: it requires both linked, settled, original receipts to agree on network, asset, payee, task class, normalized endpoint, chronology and 5,000 + 5,000 allocation, then demands exactly one correctly attributed 10,000-unit on-chain transfer. No other mismatches may pass. The **original SQLite receipts and research totals remain untouched**.
+
+For this one row alone, the **public review's payment `amount` will be 10,000** (what actually moved on-chain), with the following public explanatory note:
+
+> Prepaid credit: 10,000 atomic units transferred on-chain. This call consumed 5,000; geo-r-02 consumed the remaining 5,000 without a new transfer.
+
+**Review the consequence before publishing:** a registry reader may interpret `amount` as cost of just the first response. It is the transfer amount, including prepaid credit subsequently consumed by the second call. The research report is still the source of truth for per-call consumption. This explicit note keeps the two claims separate. If the real receipts or chain evidence differ from this documented model, the audit stays **not ready**, and no publication is possible without further investigation.
 
 ## Prerequisites
 
@@ -27,7 +39,7 @@ The audit is written to `.backfill/run-001-audit.json` with owner-only file perm
 
 Success requires **zero errors**, 34 planned and stored receipts, 31 graded responses, exactly 30 distinct transaction hashes, all 30 successfully traced payments, 22 useful + eight not useful, exactly one excluded row (`geo-r-02`), and no contradictions between receipt labels, results, and chain evidence. Otherwise, the audit is marked `ready: false` and publishing is refused.
 
-The original free-text `outcomeNote` values are **not** automatically included in the public review payload. The audit flags how many were omitted. The binary outcomes, reason codes, recovery values, task classes, and payment evidence remain intact.
+The original free-text `outcomeNote` values are **not** automatically included in the public review payload. The only newly generated public note is the explicitly documented `geo-r-01` prepaid-credit explanation. The audit flags how many were omitted. The binary outcomes, reason codes, recovery values, task classes, and payment evidence remain intact.
 
 You can inspect a *summary without printing wallet addresses* with:
 
